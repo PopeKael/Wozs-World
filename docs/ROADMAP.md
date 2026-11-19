@@ -5,6 +5,14 @@
 - **1.0.0:** Reproduce the current working local world with independent runtime state, account registration, procedural terrain and the existing Aurora workflow. Outstanding clean-install and viewer validation are documented as known limitations.
 - **1.1:** Refine the installation process, choose and test starter avatars, and simplify account-to-world onboarding.
 
+## 1.1 architecture checkpoint — 2026-11-19
+
+- Target architecture: OpenSimulator standalone with Hypergrid support (`config-include/StandaloneHypergrid.ini`), retaining the existing standalone database and region identity. Enable and test this mode locally before adopting it as the installer default.
+- Configure the `[Hypergrid]` GatekeeperURI and HomeURI in the installed `config-include/StandaloneCommon.ini` to use the instance's existing base URL and public port. Keep loopback addressing, the existing firewall restrictions and private RemoteAdmin settings during this phase.
+- Welcome page: local account creation, existing resident login and a Hypergrid visitor option (coming soon). Foreign residents authenticate on their home grid, not through our registration form.
+- Acceptance: successful local restart, existing avatar/inventory persistence, registration and starter outfit provisioning under standalone Hypergrid mode. Test inbound and outbound Hypergrid travel separately when external networking and a supported runtime have been reviewed.
+- Status: architecture decision recorded; live configuration change and verification pending. Version 1.0.0 installer defaults remain unchanged until local validation.
+
 ## 1. Reliable starter experience
 
 - Select two male and two female starter packages from licensed, compatible sources; include genuinely different body/skin/hair combinations rather than four clones.
