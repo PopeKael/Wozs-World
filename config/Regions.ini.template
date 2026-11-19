@@ -1,0 +1,14 @@
+; Local-only region template for stock OpenSimulator 0.9.3.0.
+; Initialize-WorldConfig.ps1 replaces the UUID marker once, then preserves it.
+
+[Woz's World]
+RegionUUID = __GENERATE_REGION_UUID__
+Location = 1000,1000
+InternalAddress = 127.0.0.1
+InternalPort = __GENERATE_WORLD_PORT__
+AllowAlternatePorts = False
+ExternalHostName = 127.0.0.1
+SizeX = 512
+SizeY = 512
+; Generated from the install's unique terrain metadata.
+DefaultLanding = __GENERATE_LANDING__

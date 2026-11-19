@@ -1,0 +1,7 @@
+{
+  "name": "mountain",
+  "description": "A central volcanic island with a high summit, foothills and submerged edges.",
+  "size": 512,
+  "sea_level_m": 20,
+  "landform": "mountain"
+}

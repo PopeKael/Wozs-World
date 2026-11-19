@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "notice": "Upstream assets are not included in Git. Keep the original archive and all per-component notices. Hash mismatches stop acquisition.",
+  "sources": [
+    {"id":"Ruth2","repository":"RuthAndRoth/Ruth2","commit":"aab3faf9ddb2d5c69cd5746f4bc4233c9d990270","sha256":"99D0D6EF0D66D86CEAE455AA0CE2F25BA0F2A4AD4C3ED663CBAFA3445D75468C","licenseSummary":"AGPL repository with per-component notices"},
+    {"id":"Roth2","repository":"RuthAndRoth/Roth2","commit":"8dfb8b200dd6fdeb40358ac4753b01cc2de15bee","sha256":"58B1E1E65E46AB9D3764D99F134D7C9C701696812C5246F4341D67AF3BC18DB2","licenseSummary":"AGPL repository with per-component notices"},
+    {"id":"RuthToo","repository":"ocsean/RuthToo","commit":"95892f99064ae2f4b8648593122c126a6bb1d31e","sha256":"BBBEECABF58CFF8260E91958B0CA9F8048750F5ED1ADC8D787C62C1A6DDC85D5","licenseSummary":"AGPL repository; additions may have separate terms"},
+    {"id":"RothToo","repository":"ocsean/RothToo","commit":"d1f0562d8e4192aad4cf9457483936fc89c0ac9b","sha256":"4E7298F7B5F518D7A507DFF3F02BE9E1398C3708EFA723A3967066DCD050E380","licenseSummary":"AGPL repository; check included notices"},
+    {"id":"Max","repository":"RuthAndRoth/Max","commit":"ca27a4bda597c06cdfc6c59490ceff30c38b55b0","sha256":"C23C99AE5E5B5384281CC30E4366FBD338752358C1F9933A7C715B25966296A7","licenseSummary":"Mixed-component package; mesh notice references CC BY 4.0"},
+    {"id":"R3","repository":"RuthAndRoth/R3","commit":"2994d5dbf628031ee3db4e8ce120004ca639df02","sha256":"8732246EE53D8865D2B5D62FEB0101B4F9AC246F7EA462AE8EC7F28402AB8AF3","licenseSummary":"CC BY-NC 4.0 proposal; non-commercial restriction"},
+    {"id":"Skins","repository":"RuthAndRoth/Skins","commit":"d07463a6d2f14e7ce998599c0557b5454c3a5644","sha256":"AF4BEFE7ABD0F180A5F40C36286241CAB2543C2898E0A6B5D4F858A43BC477D6","licenseSummary":"Mixed creator licenses; read every included skin notice"},
+    {"id":"Extras","repository":"RuthAndRoth/Extras","commit":"d2a17e7242911dc40a832cc08d7215a919f16501","sha256":"EA26D5C7F3166C21FFA7A2BC2A0A0C41D6E5514F20C770EAE65D07F566A65541","licenseSummary":"Mixed creator licenses; read every included component notice"}
+  ]
+}

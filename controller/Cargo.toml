@@ -1,0 +1,15 @@
+[package]
+name = "woz-world-dock"
+version = "0.1.0"
+edition = "2024"
+description = "A small Windows controller for the local Woz's World OpenSimulator instance"
+build = "build.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[build-dependencies]
+winres = "0.1.12"

@@ -1,0 +1,7 @@
+{
+  "name": "archipelago",
+  "description": "Four distinct green islands with shallow channels and varied coastlines.",
+  "size": 512,
+  "sea_level_m": 20,
+  "landform": "archipelago"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "atoll",
+  "description": "A broken tropical ring around a shallow lagoon, with a sheltered landing shelf.",
+  "size": 512,
+  "sea_level_m": 20,
+  "landform": "atoll"
+}
