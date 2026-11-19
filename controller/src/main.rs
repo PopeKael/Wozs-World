@@ -4,7 +4,6 @@
 use std::{
     fs,
     io::{self, Write},
-    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
@@ -17,28 +16,16 @@ use std::os::windows::process::CommandExt;
 
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportBuilder, ViewportCommand, WindowLevel};
 use serde::{Deserialize, Serialize};
+use tray_icon::{
+    Icon, TrayIcon, TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+};
 
 #[cfg(not(target_os = "windows"))]
 compile_error!("Woz's World Dock is a Windows desktop application.");
 
-const DEFAULT_PORT: u16 = 9000;
-const STATUS_REFRESH: Duration = Duration::from_secs(2);
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+const STATUS_REFRESH: Duration = Duration::from_secs(5);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct ManagedProcess {
-    process_id: u32,
-    dotnet_path: PathBuf,
-    #[serde(default = "default_port")]
-    http_port: u16,
-    ready_utc: Option<String>,
-}
-
-fn default_port() -> u16 {
-    DEFAULT_PORT
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -59,6 +46,10 @@ enum WorldStatus {
     Running { process_id: u32 },
     Starting { process_id: u32 },
     Unresponsive { process_id: u32 },
+    ServiceIssue {
+        process_id: Option<u32>,
+        can_start_missing_service: bool,
+    },
     Stopped,
     UnmanagedListener,
     Attention(String),
@@ -71,12 +62,16 @@ impl WorldStatus {
 
     fn can_start(&self) -> bool {
         matches!(self, Self::Stopped)
+            || matches!(self, Self::ServiceIssue { can_start_missing_service: true, .. })
     }
 
     fn can_stop(&self) -> bool {
         matches!(
             self,
-            Self::Running { .. } | Self::Starting { .. } | Self::Unresponsive { .. }
+            Self::Running { .. }
+                | Self::Starting { .. }
+                | Self::Unresponsive { .. }
+                | Self::ServiceIssue { .. }
         )
     }
 
@@ -85,6 +80,7 @@ impl WorldStatus {
             Self::Running { .. } => "RUNNING",
             Self::Starting { .. } => "PROCESS ACTIVE",
             Self::Unresponsive { .. } => "NOT RESPONDING",
+            Self::ServiceIssue { .. } => "SERVICE ISSUE",
             Self::Stopped => "STOPPED",
             Self::UnmanagedListener => "PORT IN USE",
             Self::Attention(_) => "CHECK DETAILS",
@@ -96,9 +92,10 @@ impl WorldStatus {
             Self::Running { .. } => Color32::from_rgb(86, 207, 133),
             Self::Starting { .. } => Color32::from_rgb(244, 191, 82),
             Self::Stopped => Color32::from_rgb(145, 155, 169),
-            Self::UnmanagedListener | Self::Unresponsive { .. } | Self::Attention(_) => {
-                Color32::from_rgb(243, 119, 103)
-            }
+            Self::UnmanagedListener
+            | Self::Unresponsive { .. }
+            | Self::ServiceIssue { .. }
+            | Self::Attention(_) => Color32::from_rgb(243, 119, 103),
         }
     }
 
@@ -115,6 +112,10 @@ impl WorldStatus {
             Self::Unresponsive { process_id } => format!(
                 "The simulator was ready, but its configured local port is no longer responding · PID {process_id}; graceful stop is available."
             ),
+            Self::ServiceIssue { process_id, .. } => format!(
+                "At least one required service needs attention. Graceful stop and restart remain available · PID {}. See the service rows below.",
+                process_id.map_or_else(|| "unknown".to_owned(), |pid| pid.to_string())
+            ),
             Self::Stopped => "The local simulator is stopped.".to_owned(),
             Self::UnmanagedListener => format!(
                 "The configured local port is open, but it is not owned by this project's recorded process."
@@ -128,6 +129,8 @@ impl WorldStatus {
 enum Operation {
     Start,
     Stop,
+    Restart,
+    Recover,
 }
 
 impl Operation {
@@ -135,6 +138,8 @@ impl Operation {
         match self {
             Self::Start => "Starting Woz's World…",
             Self::Stop => "Requesting graceful shutdown…",
+            Self::Restart => "Verifying shutdown, then restarting…",
+            Self::Recover => "Recovering verified project processes…",
         }
     }
 
@@ -142,6 +147,8 @@ impl Operation {
         match self {
             Self::Start => "Start-World.ps1",
             Self::Stop => "Stop-World.ps1",
+            Self::Restart => "Restart-World.ps1",
+            Self::Recover => "Recover-World.ps1",
         }
     }
 
@@ -149,6 +156,8 @@ impl Operation {
         match self {
             Self::Start => "start",
             Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Recover => "recover",
         }
     }
 }
@@ -176,6 +185,11 @@ struct AccountResult {
     error: Option<String>,
 }
 
+struct StatusResult {
+    status: WorldStatus,
+    service_lines: Vec<ServiceLine>,
+}
+
 struct WorldDock {
     project_root: PathBuf,
     settings: Settings,
@@ -185,6 +199,9 @@ struct WorldDock {
     current_operation_id: u64,
     operation_receiver: Receiver<OperationResult>,
     operation_sender: Sender<OperationResult>,
+    status_receiver: Receiver<StatusResult>,
+    status_sender: Sender<StatusResult>,
+    status_check_in_progress: bool,
     account_receiver: Receiver<AccountResult>,
     account_sender: Sender<AccountResult>,
     account_request_id: u64,
@@ -199,18 +216,64 @@ struct WorldDock {
     last_operation: String,
     last_output: String,
     show_details: bool,
+    service_lines: Vec<ServiceLine>,
+    show_recovery_confirmation: bool,
+    exit_requested: bool,
+    tray_icon: Option<TrayIcon>,
+    tray_items: Option<TrayItems>,
+}
+
+struct ServiceLine {
+    name: &'static str,
+    status: String,
+    detail: String,
+}
+
+struct TrayItems {
+    open: MenuItem,
+    start: MenuItem,
+    stop: MenuItem,
+    restart: MenuItem,
+    exit: MenuItem,
+}
+
+#[derive(Deserialize)]
+struct ServiceSnapshot {
+    #[serde(rename = "Overall")]
+    overall: String,
+    #[serde(rename = "Services")]
+    services: ServiceSnapshotSet,
+}
+
+#[derive(Deserialize)]
+struct ServiceSnapshotSet {
+    #[serde(rename = "OpenSimulator")]
+    opensim: ServiceSnapshotRecord,
+    #[serde(rename = "Registration")]
+    registration: ServiceSnapshotRecord,
+    #[serde(rename = "RemoteAdmin")]
+    remote_admin: ServiceSnapshotRecord,
+}
+
+#[derive(Deserialize)]
+struct ServiceSnapshotRecord {
+    #[serde(rename = "Status")]
+    status: String,
+    #[serde(rename = "ProcessId")]
+    process_id: Option<u32>,
+    #[serde(rename = "Detail")]
+    detail: String,
 }
 
 impl WorldDock {
     fn new(project_root: PathBuf, settings: Settings) -> Self {
         let (operation_sender, operation_receiver) = mpsc::channel();
+        let (status_sender, status_receiver) = mpsc::channel();
         let (account_sender, account_receiver) = mpsc::channel();
-        let status = inspect_world(&project_root);
-
-        Self {
+        let mut dock = Self {
             project_root,
             settings,
-            status,
+            status: WorldStatus::Attention("Checking local service health…".to_owned()),
             last_status_check: Instant::now(),
             active_operation: None,
             current_operation_id: SystemTime::now()
@@ -219,6 +282,9 @@ impl WorldDock {
                 .as_millis() as u64,
             operation_receiver,
             operation_sender,
+            status_receiver,
+            status_sender,
+            status_check_in_progress: false,
             account_receiver,
             account_sender,
             account_request_id: 0,
@@ -233,7 +299,22 @@ impl WorldDock {
             last_operation: "Controller ready.".to_owned(),
             last_output: String::new(),
             show_details: false,
-        }
+            service_lines: ["OpenSimulator", "Registration", "RemoteAdmin"]
+                .into_iter()
+                .map(|name| ServiceLine {
+                    name,
+                    status: "CHECKING".to_owned(),
+                    detail: "Reading service state…".to_owned(),
+                })
+                .collect(),
+            show_recovery_confirmation: false,
+            exit_requested: false,
+            tray_icon: None,
+            tray_items: None,
+        };
+        dock.initialize_tray();
+        dock.refresh_status();
+        dock
     }
 
     fn begin_operation(&mut self, operation: Operation) {
@@ -245,9 +326,7 @@ impl WorldDock {
         self.last_operation = operation.label().to_owned();
 
         thread::spawn(move || {
-            let script = project_root
-                .join("scripts")
-                .join(operation.script_name());
+            let script = project_root.join("scripts").join(operation.script_name());
             let output_dir = project_root.join(".local").join("world-dock-commands");
             let run_tag = format!("{operation_id:016}-{}", operation.file_tag());
             let stdout_path = output_dir.join(format!("{run_tag}.stdout.log"));
@@ -265,6 +344,14 @@ impl WorldDock {
                     .arg("Bypass")
                     .arg("-File")
                     .arg(&script)
+                    .args(if operation == Operation::Recover {
+                        vec![
+                            "-ForceOwnedProcesses".to_owned(),
+                            "-Confirm:$false".to_owned(),
+                        ]
+                    } else {
+                        Vec::new()
+                    })
                     .current_dir(&project_root)
                     .creation_flags(CREATE_NO_WINDOW)
                     .stdin(Stdio::null())
@@ -312,17 +399,30 @@ impl WorldDock {
             self.last_operation = match (&result.error, result.exit_code) {
                 (Some(error), _) => error.clone(),
                 (None, Some(0)) => match result.operation {
-                    Operation::Start if self.last_output.contains("is ready") => {
-                        "World is ready; region and REST checks passed.".to_owned()
+                    Operation::Start
+                        if self.last_output.contains("All required services are ready") =>
+                    {
+                        "All services passed their readiness checks.".to_owned()
                     }
                     Operation::Start => "Start command completed.".to_owned(),
-                    Operation::Stop if self.last_output.contains("No simulator process was running") => {
+                    Operation::Stop
+                        if self
+                            .last_output
+                            .contains("No simulator process was running") =>
+                    {
                         "World was already stopped; cleared its stale PID record.".to_owned()
                     }
-                    Operation::Stop if self.last_output.contains("exited before the REST console accepted") => {
-                        "Simulator exited before a graceful request; process record cleared.".to_owned()
+                    Operation::Stop
+                        if self
+                            .last_output
+                            .contains("exited before the REST console accepted") =>
+                    {
+                        "Simulator exited before a graceful request; process record cleared."
+                            .to_owned()
                     }
                     Operation::Stop => "Graceful shutdown completed.".to_owned(),
+                    Operation::Restart => "Shutdown and restart checks completed.".to_owned(),
+                    Operation::Recover => "Safe recovery check completed.".to_owned(),
                 },
                 (None, code) => format!(
                     "{} failed with exit code {}.",
@@ -378,11 +478,14 @@ impl WorldDock {
             return;
         }
         if self.account_password.chars().any(char::is_control) {
-            self.account_message = "The password cannot contain a line break or other control character.".to_owned();
+            self.account_message =
+                "The password cannot contain a line break or other control character.".to_owned();
             return;
         }
         if email.chars().any(char::is_control) {
-            self.account_message = "The email field cannot contain a line break or other control character.".to_owned();
+            self.account_message =
+                "The email field cannot contain a line break or other control character."
+                    .to_owned();
             return;
         }
         if self.account_password.is_empty() {
@@ -403,7 +506,10 @@ impl WorldDock {
         self.account_request_id = self.account_request_id.wrapping_add(1);
         let request_id = self.account_request_id;
         let sender = self.account_sender.clone();
-        let script = self.project_root.join("scripts").join("Create-World-Account.ps1");
+        let script = self
+            .project_root
+            .join("scripts")
+            .join("Create-World-Account.ps1");
         let project_root = self.project_root.clone();
         self.account_in_progress = true;
         self.account_message = "Creating the account on the local simulator…".to_owned();
@@ -427,7 +533,10 @@ impl WorldDock {
                 let mut request_bytes = serde_json::to_vec(&request)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 let mut stdin = child.stdin.take().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "Account helper input is unavailable.")
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "Account helper input is unavailable.",
+                    )
                 })?;
                 stdin.write_all(&request_bytes)?;
                 drop(stdin);
@@ -437,9 +546,7 @@ impl WorldDock {
 
                 let output = child.wait_with_output()?;
                 let mut output_text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                let stderr_text = String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_owned();
+                let stderr_text = String::from_utf8_lossy(&output.stderr).trim().to_owned();
                 if output_text.is_empty() && !stderr_text.is_empty() {
                     output_text = stderr_text;
                 }
@@ -463,8 +570,116 @@ impl WorldDock {
     }
 
     fn refresh_status(&mut self) {
-        self.status = inspect_world(&self.project_root);
+        if self.status_check_in_progress {
+            return;
+        }
+        self.status_check_in_progress = true;
         self.last_status_check = Instant::now();
+        let project_root = self.project_root.clone();
+        let sender = self.status_sender.clone();
+        thread::spawn(move || {
+            let (status, service_lines) = inspect_services(&project_root);
+            let _ = sender.send(StatusResult {
+                status,
+                service_lines,
+            });
+        });
+    }
+
+    fn receive_status_results(&mut self) {
+        while let Ok(result) = self.status_receiver.try_recv() {
+            self.status_check_in_progress = false;
+            self.status = result.status;
+            self.service_lines = result.service_lines;
+            self.update_tray_status();
+        }
+    }
+
+    fn initialize_tray(&mut self) {
+        let menu = Menu::new();
+        let items = TrayItems {
+            open: MenuItem::new("Open", true, None),
+            start: MenuItem::new("Start", false, None),
+            stop: MenuItem::new("Stop", false, None),
+            restart: MenuItem::new("Restart", false, None),
+            exit: MenuItem::new("Exit", true, None),
+        };
+        let separator = PredefinedMenuItem::separator();
+        let built = menu
+            .append(&items.open)
+            .and_then(|_| menu.append(&items.start))
+            .and_then(|_| menu.append(&items.stop))
+            .and_then(|_| menu.append(&items.restart))
+            .and_then(|_| menu.append(&separator));
+        if let Err(error) = built {
+            self.last_operation = format!("System tray menu could not be created: {error}");
+            return;
+        }
+        if let Err(error) = menu.append(&items.exit) {
+            self.last_operation = format!("System tray Exit option could not be created: {error}");
+            return;
+        }
+        let tray = TrayIconBuilder::new()
+            .with_tooltip("Woz's World Dock — checking services")
+            .with_icon(tray_image(self.status.color()))
+            .with_menu(Box::new(menu))
+            .build();
+        match tray {
+            Ok(icon) => {
+                self.tray_icon = Some(icon);
+                self.tray_items = Some(items);
+                self.update_tray_status();
+            }
+            Err(error) => {
+                self.last_operation = format!("System tray icon could not be created: {error}");
+            }
+        }
+    }
+
+    fn update_tray_status(&mut self) {
+        let Some(items) = &self.tray_items else {
+            return;
+        };
+        items
+            .start
+            .set_enabled(self.active_operation.is_none() && self.status.can_start());
+        items
+            .stop
+            .set_enabled(self.active_operation.is_none() && self.status.can_stop());
+        items
+            .restart
+            .set_enabled(self.active_operation.is_none() && self.status.can_stop());
+        if let Some(icon) = &self.tray_icon {
+            let _ = icon.set_icon(Some(tray_image(self.status.color())));
+            let _ = icon.set_tooltip(Some(format!("Woz's World Dock — {}", self.status.label())));
+        }
+    }
+
+    fn process_tray_events(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            let Some(items) = &self.tray_items else {
+                continue;
+            };
+            if event.id == *items.open.id() {
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+            } else if event.id == *items.start.id() {
+                if self.active_operation.is_none() && self.status.can_start() {
+                    self.begin_operation(Operation::Start);
+                }
+            } else if event.id == *items.stop.id() {
+                if self.active_operation.is_none() && self.status.can_stop() {
+                    self.begin_operation(Operation::Stop);
+                }
+            } else if event.id == *items.restart.id() {
+                if self.active_operation.is_none() && self.status.can_stop() {
+                    self.begin_operation(Operation::Restart);
+                }
+            } else if event.id == *items.exit.id() {
+                self.exit_requested = true;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+        }
     }
 
     fn save_settings(&self) -> io::Result<()> {
@@ -527,6 +742,21 @@ impl eframe::App for WorldDock {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root_ui.ctx().clone();
         self.receive_operation_results();
+        self.receive_status_results();
+        self.process_tray_events(&ctx);
+
+        if ctx.input(|input| input.viewport().close_requested())
+            && !self.exit_requested
+            && self.tray_icon.is_some()
+        {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.last_operation = "Woz's World Dock is running in the system tray.".to_owned();
+        } else if ctx.input(|input| input.viewport().close_requested()) && !self.exit_requested {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.last_operation =
+                "The system tray is unavailable, so the Dock stays open.".to_owned();
+        }
 
         if self.last_status_check.elapsed() >= STATUS_REFRESH {
             self.refresh_status();
@@ -540,7 +770,8 @@ impl eframe::App for WorldDock {
                 "World is responding; the start script is finishing its checks.".to_owned();
         }
 
-        ctx.request_repaint_after(Duration::from_millis(300));
+        self.update_tray_status();
+        ctx.request_repaint_after(Duration::from_millis(500));
 
         egui::CentralPanel::default().show(root_ui, |ui| {
             ui.add_space(3.0);
@@ -571,6 +802,15 @@ impl eframe::App for WorldDock {
                         );
                     });
                     ui.label(RichText::new(self.status.detail()).small());
+                    ui.add_space(5.0);
+                    for service in &self.service_lines {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{}:", service.name)).strong());
+                            let color = service_color(&service.status);
+                            ui.label(RichText::new(&service.status).color(color));
+                            ui.label(RichText::new(&service.detail).small().weak());
+                        });
+                    }
                 });
 
             ui.add_space(10.0);
@@ -592,6 +832,19 @@ impl eframe::App for WorldDock {
                     .clicked()
                 {
                     self.begin_operation(Operation::Stop);
+                }
+                let restart_enabled = self.active_operation.is_none() && self.status.can_stop();
+                if ui
+                    .add_enabled(restart_enabled, egui::Button::new("↻  Restart"))
+                    .clicked()
+                {
+                    self.begin_operation(Operation::Restart);
+                }
+                if ui
+                    .add_enabled(self.active_operation.is_none(), egui::Button::new("Safe recovery…"))
+                    .clicked()
+                {
+                    self.show_recovery_confirmation = true;
                 }
                 let create_enabled = self.status.is_running() && !self.account_in_progress;
                 if ui
@@ -640,7 +893,7 @@ impl eframe::App for WorldDock {
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.weak("Closing this panel leaves the simulator running.");
+                ui.weak("Closing hides the Dock in the tray. Exit closes the Dock; running services stay running.");
             });
         });
 
@@ -650,10 +903,36 @@ impl eframe::App for WorldDock {
         if self.show_create_account {
             self.draw_create_account(&ctx);
         }
+        if self.show_recovery_confirmation {
+            self.draw_recovery_confirmation(&ctx);
+        }
     }
 }
 
 impl WorldDock {
+    fn draw_recovery_confirmation(&mut self, ctx: &egui::Context) {
+        let mut confirmed = false;
+        let mut cancelled = false;
+        let mut open = self.show_recovery_confirmation;
+        egui::Window::new("Safe service recovery")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Recovery first clears stale records whose process and ports are already gone.");
+                ui.label("Force recovery can stop a service only after its recorded PID, executable, command line, start time and listener ownership all match this project.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Recover verified services").clicked() { confirmed = true; }
+                    if ui.button("Cancel").clicked() { cancelled = true; }
+                });
+            });
+        self.show_recovery_confirmation = open && !confirmed && !cancelled;
+        if confirmed {
+            self.begin_operation(Operation::Recover);
+        }
+    }
+
     fn draw_create_account(&mut self, ctx: &egui::Context) {
         let mut submit = false;
         let mut is_open = self.show_create_account;
@@ -670,20 +949,40 @@ impl WorldDock {
                 ui.add_space(8.0);
 
                 ui.label("First name");
-                ui.add(egui::TextEdit::singleline(&mut self.account_first_name).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.account_first_name)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.label("Last name");
-                ui.add(egui::TextEdit::singleline(&mut self.account_last_name).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.account_last_name)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.label("Email (optional)");
-                ui.add(egui::TextEdit::singleline(&mut self.account_email).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.account_email)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.label("Password");
-                ui.add(egui::TextEdit::singleline(&mut self.account_password).password(true).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.account_password)
+                        .password(true)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.label("Confirm password");
-                ui.add(egui::TextEdit::singleline(&mut self.account_password_confirm).password(true).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.account_password_confirm)
+                        .password(true)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!self.account_in_progress, egui::Button::new("Create account"))
+                        .add_enabled(
+                            !self.account_in_progress,
+                            egui::Button::new("Create account"),
+                        )
                         .clicked()
                     {
                         submit = true;
@@ -714,115 +1013,112 @@ fn valid_account_name(value: &str) -> bool {
         })
 }
 
-fn inspect_world(project_root: &Path) -> WorldStatus {
-    let default_port = configured_port(project_root);
-    let process_file = project_root
-        .join(".local")
-        .join("opensim-process.json");
-    let recorded = match fs::read(&process_file) {
-        Ok(mut bytes) => {
-            if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-                bytes.drain(..3);
-            }
-            match serde_json::from_slice::<ManagedProcess>(&bytes) {
-                Ok(state) => Some(state),
-                Err(error) => {
-                    let port_open = tcp_is_open(default_port);
-                    if port_open {
-                        return WorldStatus::UnmanagedListener;
-                    }
-                    return WorldStatus::Attention(format!(
-                        "The managed process record could not be read: {error}"
-                    ));
-                }
-            }
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return WorldStatus::Attention(format!(
-                "Could not read the managed process record: {error}"
-            ));
-        }
-    };
-
-    let Some(recorded) = recorded else {
-        return if tcp_is_open(default_port) {
-            WorldStatus::UnmanagedListener
-        } else {
-            WorldStatus::Stopped
-        };
-    };
-
-    let expected_runtime = project_root.join("runtime").join("dotnet10").join("dotnet.exe");
-    if !same_windows_path(&recorded.dotnet_path, &expected_runtime) {
-        return WorldStatus::Attention(
-            "The process record points to a different .NET runtime. Use the project scripts to reconcile it."
-                .to_owned(),
-        );
-    }
-
-    let actual_path = match process_image_path(recorded.process_id) {
-        Ok(Some(path)) => path,
-        Ok(None) => {
-            return if tcp_is_open(recorded.http_port) {
-                WorldStatus::UnmanagedListener
-            } else {
-                WorldStatus::Stopped
-            };
-        }
-        Err(error) => {
-            return WorldStatus::Attention(format!(
-                "Could not inspect the recorded process: {error}"
-            ));
-        }
-    };
-
-    if !same_windows_path(&actual_path, &recorded.dotnet_path) {
-        return if tcp_is_open(recorded.http_port) {
-            WorldStatus::UnmanagedListener
-        } else {
+fn inspect_services(project_root: &Path) -> (WorldStatus, Vec<ServiceLine>) {
+    let script = project_root
+        .join("scripts")
+        .join("Get-WorldServiceStatus.ps1");
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&script)
+        .arg("-AsJson")
+        .current_dir(project_root)
+        .creation_flags(CREATE_NO_WINDOW);
+    let snapshot = command.output().ok().and_then(|output| {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let start = stdout.find('{')?;
+        let end = stdout.rfind('}')?;
+        serde_json::from_str::<ServiceSnapshot>(&stdout[start..=end]).ok()
+    });
+    let Some(snapshot) = snapshot else {
+        let lines = ["OpenSimulator", "Registration", "RemoteAdmin"]
+            .into_iter()
+            .map(|name| ServiceLine {
+                name,
+                status: "UNKNOWN".to_owned(),
+                detail: "The service status script did not return valid JSON.".to_owned(),
+            })
+            .collect();
+        return (
             WorldStatus::Attention(
-                "The recorded PID now belongs to a different executable.".to_owned(),
-            )
-        };
-    }
+                "Could not read independent service health. Check the Dock details and local scripts.".to_owned(),
+            ),
+            lines,
+        );
+    };
+    let rows = vec![
+        ServiceLine {
+            name: "OpenSimulator",
+            status: snapshot.services.opensim.status.clone().to_uppercase(),
+            detail: snapshot.services.opensim.detail.clone(),
+        },
+        ServiceLine {
+            name: "Registration",
+            status: snapshot.services.registration.status.clone().to_uppercase(),
+            detail: snapshot.services.registration.detail.clone(),
+        },
+        ServiceLine {
+            name: "RemoteAdmin",
+            status: snapshot.services.remote_admin.status.clone().to_uppercase(),
+            detail: snapshot.services.remote_admin.detail.clone(),
+        },
+    ];
+    let status = match snapshot.overall.as_str() {
+        "Running" => WorldStatus::Running {
+            process_id: snapshot.services.opensim.process_id.unwrap_or_default(),
+        },
+        "Stopped" => WorldStatus::Stopped,
+        _ if snapshot.services.opensim.status == "Unresponsive" => WorldStatus::Unresponsive {
+            process_id: snapshot.services.opensim.process_id.unwrap_or_default(),
+        },
+        _ if snapshot.services.opensim.status == "Starting" => WorldStatus::Starting {
+            process_id: snapshot.services.opensim.process_id.unwrap_or_default(),
+        },
+        _ if rows.iter().any(|line| line.status == "UNMANAGED") && snapshot.services.opensim.process_id.is_none() => WorldStatus::UnmanagedListener,
+        _ if snapshot.services.opensim.process_id.is_some() || snapshot.services.registration.process_id.is_some() => WorldStatus::ServiceIssue {
+            process_id: snapshot.services.opensim.process_id.or(snapshot.services.registration.process_id),
+            can_start_missing_service: (snapshot.services.opensim.status == "Running"
+                && snapshot.services.remote_admin.status == "Running"
+                && snapshot.services.registration.status == "Stopped")
+                || (snapshot.services.opensim.status == "Stopped"
+                    && snapshot.services.registration.status == "Running"
+                    && snapshot.services.remote_admin.status == "Stopped"),
+        },
+        _ => WorldStatus::Attention(
+            "At least one required service needs attention. Use Details or Safe recovery to inspect the recorded state.".to_owned(),
+        ),
+    };
+    (status, rows)
+}
 
-    if tcp_is_open(recorded.http_port) {
-        if recorded.ready_utc.is_some() {
-            WorldStatus::Running {
-                process_id: recorded.process_id,
-            }
-        } else {
-            WorldStatus::Starting {
-                process_id: recorded.process_id,
-            }
-        }
-    } else if recorded.ready_utc.is_some() {
-        WorldStatus::Unresponsive {
-            process_id: recorded.process_id,
-        }
-    } else {
-        WorldStatus::Starting {
-            process_id: recorded.process_id,
-        }
+fn service_color(status: &str) -> Color32 {
+    match status {
+        "RUNNING" => Color32::from_rgb(86, 207, 133),
+        "STARTING" => Color32::from_rgb(244, 191, 82),
+        "STOPPED" => Color32::from_rgb(145, 155, 169),
+        _ => Color32::from_rgb(243, 119, 103),
     }
 }
 
-fn configured_port(project_root: &Path) -> u16 {
-    let path = project_root.join(".local").join("install.json");
-    let Ok(bytes) = fs::read(path) else { return DEFAULT_PORT };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return DEFAULT_PORT };
-    value
-        .get("worldPort")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|port| u16::try_from(port).ok())
-        .filter(|port| *port >= 1024)
-        .unwrap_or(DEFAULT_PORT)
-}
-
-fn tcp_is_open(port: u16) -> bool {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).is_ok()
+fn tray_image(color: Color32) -> Icon {
+    let side = 32u32;
+    let mut rgba = Vec::with_capacity((side * side * 4) as usize);
+    for y in 0..side {
+        for x in 0..side {
+            let dx = x as f32 - 15.5;
+            let dy = y as f32 - 15.5;
+            if dx * dx + dy * dy <= 210.0 {
+                rgba.extend_from_slice(&[color.r(), color.g(), color.b(), 255]);
+            } else {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    Icon::from_rgba(rgba, side, side).expect("32x32 RGBA tray icon is valid")
 }
 
 fn read_text_file(path: &Path) -> String {
@@ -837,59 +1133,6 @@ fn read_text_file(path: &Path) -> String {
         return String::from_utf16_lossy(&words).trim().to_owned();
     }
     String::from_utf8_lossy(&bytes).trim().to_owned()
-}
-
-fn same_windows_path(left: &Path, right: &Path) -> bool {
-    let left = canonical_or_absolute(left);
-    let right = canonical_or_absolute(right);
-    normalize_windows_path(&left).eq_ignore_ascii_case(&normalize_windows_path(&right))
-}
-
-fn canonical_or_absolute(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn normalize_windows_path(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('/', "\\");
-    text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
-}
-
-#[cfg(windows)]
-fn process_image_path(process_id: u32) -> Result<Option<PathBuf>, String> {
-    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError},
-        System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-        },
-    };
-
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
-        if process.is_null() {
-            let error = GetLastError();
-            if error == 87 || error == 1168 {
-                return Ok(None);
-            }
-            return Err(format!("OpenProcess returned Windows error {error}."));
-        }
-
-        let mut buffer = vec![0u16; 32_768];
-        let mut length = buffer.len() as u32;
-        let queried =
-            QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) != 0;
-        let error = if queried { 0 } else { GetLastError() };
-        CloseHandle(process);
-
-        if !queried {
-            return Err(format!(
-                "QueryFullProcessImageNameW returned Windows error {error}."
-            ));
-        }
-
-        buffer.truncate(length as usize);
-        Ok(Some(PathBuf::from(OsString::from_wide(&buffer))))
-    }
 }
 
 fn find_project_root() -> Result<PathBuf, String> {
@@ -973,16 +1216,13 @@ fn icon_data() -> eframe::egui::IconData {
 fn main() -> eframe::Result<()> {
     let project_root = find_project_root().map_err(|message| {
         eprintln!("{message}");
-        eframe::Error::AppCreation(Box::new(io::Error::new(
-            io::ErrorKind::NotFound,
-            message,
-        )))
+        eframe::Error::AppCreation(Box::new(io::Error::new(io::ErrorKind::NotFound, message)))
     })?;
     let settings = load_settings(&project_root);
     let mut viewport = ViewportBuilder::default()
         .with_app_id("woz-world-dock")
-        .with_inner_size([510.0, 275.0])
-        .with_min_inner_size([490.0, 260.0])
+        .with_inner_size([560.0, 390.0])
+        .with_min_inner_size([530.0, 360.0])
         .with_resizable(false)
         .with_icon(std::sync::Arc::new(icon_data()));
     if settings.always_on_top {
@@ -997,8 +1237,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Woz's World Dock",
         native_options,
-        Box::new(move |_creation_context| {
-            Ok(Box::new(WorldDock::new(project_root, settings)))
-        }),
+        Box::new(move |_creation_context| Ok(Box::new(WorldDock::new(project_root, settings)))),
     )
 }

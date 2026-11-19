@@ -3,7 +3,7 @@
 ## Version phases
 
 - **1.0.0:** Reproduce the current working local world with independent runtime state, account registration, procedural terrain and the existing Aurora workflow. Outstanding clean-install and viewer validation are documented as known limitations.
-- **1.1:** Refine the installation process, choose and test starter avatars, and simplify account-to-world onboarding.
+- **1.1:** Refine the installation process, standardize a loopback-only Standalone Hypergrid architecture, choose and test starter avatars, and simplify account-to-world onboarding. External Hypergrid access remains a separate, security-reviewed future task.
 
 ## 1.1 architecture checkpoint — 2026-11-19
 
@@ -27,13 +27,21 @@
 - Integrate Aurora login more smoothly, including a verified launcher/grid entry and a post-registration link without sending passwords through command-line arguments or logs.
 - Only design remote registration after TLS, abuse controls, privacy notice, email policy, account deletion and public network boundaries are reviewed.
 
-## 3. Original creative assets
+## 3. World Dock service lifecycle (implemented for 1.1)
+
+- Implemented: the simulator and local registration service are managed independently, with separate process identity, readiness, port health and logs. RemoteAdmin has its own health and shutdown-port checks.
+- Implemented: repeated Start is duplicate-safe; Stop is graceful and verifies ports are released; Restart verifies shutdown before starting; recovery clears stale records and only force-stops verified unresponsive project-owned processes.
+- Implemented in the candidate: system tray status, Open/Start/Stop/Restart/Exit menu, close-to-tray behavior, per-service status and a confirmed safe recovery flow. Live tray and installed-world acceptance remain pending.
+- Isolated lifecycle test results and remaining live-world acceptance checks are recorded in [World Dock lifecycle verification](WORLDDOCK-LIFECYCLE.md).
+- Keep future Hypergrid and optional account/asset services separately observable; a healthy registration page must not imply that the simulator is healthy.
+
+## 4. Original creative assets
 
 - Use Blender as the collaborative workshop for original props, scenes, clothing, textures, hair and diverse original avatars.
 - Keep the Blender version and required export add-ons documented. Label project-created models and textures CC0 1.0; retain source and provenance, and keep third-party terms attached to their assets.
 - Keep OpenSimulator/Second Life Collada export, IMVU delivery and 3D-print manifold/scale validation as separate, tested targets.
 
-## 4. Broader destinations
+## 5. Broader destinations
 
 - Test export/import with a disposable OpenSimulator region first.
 - Add Second Life, IMVU and physical-print workflows only after format and creator-rights checks.

@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [switch]$Follow
+    [switch]$Follow,
+    [switch]$LifecycleTestFixture
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+Import-Module -Name (Join-Path $projectRoot 'scripts\WorldDock.ProcessIdentity.psm1') -Force
 $serverBin = Join-Path $projectRoot 'server\OpenSimulator-0.9.3.0\bin'
 $dotnet = Join-Path $projectRoot 'runtime\dotnet8\dotnet.exe'
 $sqliteDll = Join-Path $serverBin 'sqlite3.dll'
@@ -14,7 +16,17 @@ $statePath = Join-Path $projectRoot '.local\opensim-process.json'
 $logsRoot = Join-Path $projectRoot 'logs'
 $installConfig = Join-Path $projectRoot '.local\install.json'
 if (-not (Test-Path -LiteralPath $installConfig)) { throw 'Local install settings are missing. Run scripts\Install-World.ps1 first.' }
+$fixturePath = Join-Path $projectRoot '.local\lifecycle-test-fixture.json'
+if ($LifecycleTestFixture) {
+    if (-not (Test-Path -LiteralPath $fixturePath)) { throw 'The lifecycle fixture marker is missing.' }
+    $fixture = Get-Content -LiteralPath $fixturePath -Raw | ConvertFrom-Json
+    if ($fixture.Purpose -ne 'WOW-WORLDDOCK-LIFECYCLE-TEST') { throw 'Refusing fixture mode without the isolated lifecycle test marker.' }
+    & (Join-Path $projectRoot 'scripts\Start-WorldLifecycleFixture.ps1') -ProjectRoot $projectRoot
+    return
+}
 $port = [int](Get-Content -LiteralPath $installConfig -Raw | ConvertFrom-Json).worldPort
+$install = Get-Content -LiteralPath $installConfig -Raw | ConvertFrom-Json
+$remoteAdminPort = [int]$install.remoteAdminPort
 
 foreach ($requiredPath in @($serverBin, $dotnet, $sqliteDll, $openSimIni, $regionsIni)) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
@@ -88,7 +100,13 @@ function Test-TcpPortFree {
     finally { $probe.Stop() }
 }
 
+function Test-TcpListenerOwnedBy {
+    param([Parameter(Mandatory)][int]$Port, [Parameter(Mandatory)][int]$ProcessId)
+    return (Get-PortOwners -Protocol tcp -Port $Port) -contains $ProcessId
+}
+
 $process = $null
+$startedHere = $false
 $state = $null
 $stdoutLog = $null
 $stderrLog = $null
@@ -108,6 +126,13 @@ try {
             $previousPath = $previousProcess.Path
             if (-not $previousPath -or ([System.IO.Path]::GetFullPath($previousPath) -ine [System.IO.Path]::GetFullPath($dotnet))) {
                 throw "PID $($previousState.ProcessId) is occupied by a different process. Refusing to act on it."
+            }
+            $identity = Get-WorldDockProcessIdentity -ProcessId $previousProcess.Id
+            if (-not $identity -or -not $identity.CommandLine.Contains('OpenSim.dll', [StringComparison]::OrdinalIgnoreCase)) {
+                throw "PID $($previousState.ProcessId) does not have the expected OpenSim.dll command line. Refusing to adopt it."
+            }
+            if ($previousState.ProcessStartUtc -and $previousProcess.StartTime.ToUniversalTime().ToString('o') -ne ([DateTime]$previousState.ProcessStartUtc).ToUniversalTime().ToString('o')) {
+                throw "PID $($previousState.ProcessId) has a different start time; refusing to adopt a reused PID."
             }
             $process = $previousProcess
             $state = $previousState
@@ -145,10 +170,12 @@ try {
         $stdoutLog = Join-Path $logsRoot "opensim-$runStamp.stdout.log"
         $stderrLog = Join-Path $logsRoot "opensim-$runStamp.stderr.log"
         $process = Start-Process -FilePath $dotnet -ArgumentList @('OpenSim.dll', '-console=rest') -WorkingDirectory $serverBin -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
+        $startedHere = $true
         $state = [ordered]@{
             ProcessId = $process.Id
             DotnetPath = [System.IO.Path]::GetFullPath($dotnet)
             ServerBin = [System.IO.Path]::GetFullPath($serverBin)
+            ProcessStartUtc = $process.StartTime.ToUniversalTime().ToString('o')
             StartedUtc = [DateTime]::UtcNow.ToString('o')
             StdoutLog = [System.IO.Path]::GetFullPath($stdoutLog)
             StderrLog = [System.IO.Path]::GetFullPath($stderrLog)
@@ -196,7 +223,7 @@ for ($attempt = 0; $attempt -lt 120; $attempt++) {
         catch { }
         finally { $tcp.Dispose() }
 
-        if ($portReady) {
+        if ($portReady -and (Test-TcpListenerOwnedBy -Port $remoteAdminPort -ProcessId $process.Id)) {
             try {
                 $sessionResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/StartSession/" -Method Post -Body @{ USER = $userMatch.Groups[1].Value; PASS = $passMatch.Groups[1].Value } -TimeoutSec 3
                 [xml]$sessionXml = $sessionResponse.Content
@@ -233,10 +260,21 @@ if (-not $ready) {
 
 $state.ReadyUtc = [DateTime]::UtcNow.ToString('o')
 Write-ManagedState -Value $state
-Write-Output "Woz's World is ready (PID $($process.Id)); TCP/$port is reachable."
+Write-Output "OpenSimulator is ready (PID $($process.Id)); world TCP/$port and RemoteAdmin TCP/$remoteAdminPort are reachable from the same process."
 Write-Output 'The region initialization marker and authenticated loopback REST console check passed.'
 Write-Output "Stdout: $stdoutLog"
 Write-Output "Stderr: $stderrLog"
-try { & (Join-Path $projectRoot 'registration\Start-Registration.ps1') }
-catch { Write-Warning 'Registration page could not be started. The simulator remains running.' }
+try {
+    & (Join-Path $projectRoot 'registration\Start-Registration.ps1')
+}
+catch {
+    $registrationError = $_
+    if ($startedHere) {
+        Write-Warning 'Registration did not become ready. Rolling back the OpenSimulator process started by this command.'
+        try { & (Join-Path $projectRoot 'scripts\Stop-World.ps1') -TimeoutSeconds 60 }
+        catch { Write-Warning "Automatic rollback could not complete: $($_.Exception.Message)" }
+    }
+    throw "Required registration service startup failed. $($registrationError.Exception.Message)"
+}
+Write-Output "All required services are ready: OpenSimulator TCP/UDP $port, RemoteAdmin TCP $remoteAdminPort, registration HTTP $([int]$install.registrationPort)."
 if ($Follow) { Get-Content -LiteralPath @($stdoutLog, $stderrLog) -Wait }

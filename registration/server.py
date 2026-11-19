@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / 'server' / 'OpenSimulator-0.9.3.0' / 'bin' / 'OpenSim.ini'
 INSTALL = ROOT / '.local' / 'install.json'
 TOKEN = secrets.token_urlsafe(32)
+CONTROL_TOKEN_PATH = ROOT / '.local' / 'registration-control-token.txt'
 LOCK = threading.Lock()
 
 PAGE = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Woz's World | Create account</title><style>body{font:17px system-ui;background:#101d27;color:#ecf5f7;margin:0}main{max-width:500px;margin:6vh auto;padding:32px;background:#1b303d;border-radius:16px}h1{margin:0 0 8px}p{color:#c4d5db}label{display:block;margin-top:18px}input{box-sizing:border-box;width:100%;padding:11px;margin-top:5px;border:1px solid #78929d;border-radius:6px;font:inherit}button{margin-top:24px;padding:12px 20px;border:0;border-radius:6px;background:#50d7bf;color:#082624;font-weight:bold;font-size:17px;cursor:pointer}.notice{padding:12px;background:#254c52;border-radius:6px}a{color:#86ead7}</style></head><body><main><h1>Woz's World</h1><p>Create your account to explore the world.</p>{message}<form method="post" action="/login"><input type="hidden" name="token" value="{token}"><label>First name<input name="first" required maxlength="31" autocomplete="given-name"></label><label>Last name<input name="last" required maxlength="31" autocomplete="family-name"></label><label>Password<input name="password" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><label>Confirm password<input name="confirm" type="password" required maxlength="128" autocomplete="new-password"></label><label>Email (optional)<input name="email" type="email" maxlength="254" autocomplete="email"></label><button type="submit">Create account</button></form><p>After creating your account, sign in to Woz's World in Aurora with the same name and password.</p></main></body></html>'''
@@ -39,9 +40,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def reply(self, status, content):
+    def reply(self, status, content, content_type='text/html; charset=utf-8'):
         self.send_response(status)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Type', content_type)
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
@@ -50,11 +51,28 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self):
-        if urllib.parse.urlsplit(self.path).path not in ('/', '/login', '/login/'):
+        path = urllib.parse.urlsplit(self.path).path
+        if path == '/health':
+            return self.reply(200, b'{"service":"registration","status":"ready"}', 'application/json; charset=utf-8')
+        if path not in ('/', '/login', '/login/'):
             return self.reply(404, page('Page not found.'))
         self.reply(200, page())
 
     def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path == '/__worlddock/shutdown':
+            try:
+                expected = CONTROL_TOKEN_PATH.read_text(encoding='utf-8').strip()
+            except OSError:
+                expected = ''
+            supplied = self.headers.get('X-WOW-Control-Token', '')
+            if not expected or not secrets.compare_digest(supplied, expected):
+                return self.reply(403, b'{"status":"forbidden"}', 'application/json; charset=utf-8')
+            self.send_response(202)
+            self.send_header('Content-Length', '0')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if self.path != '/login':
             return self.reply(404, page('Page not found.'))
         try:
