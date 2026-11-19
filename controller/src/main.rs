@@ -331,6 +331,9 @@ struct WorldDock {
     account_password_confirm: String,
     account_message: String,
     last_operation: String,
+    operation_message_kind: OperationMessageKind,
+    pending_completion: Option<(Operation, String)>,
+    completion_needs_fresh_status: bool,
     last_output: String,
     show_details: bool,
     service_lines: Vec<ServiceLine>,
@@ -343,6 +346,13 @@ struct WorldDock {
     instance: SingleInstance,
     tray_icon: Option<TrayIcon>,
     tray_items: Option<TrayItems>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OperationMessageKind {
+    Success,
+    InProgress,
+    Error,
 }
 
 struct ServiceLine {
@@ -419,6 +429,9 @@ impl WorldDock {
             account_password_confirm: String::new(),
             account_message: String::new(),
             last_operation: "Controller ready.".to_owned(),
+            operation_message_kind: OperationMessageKind::Success,
+            pending_completion: None,
+            completion_needs_fresh_status: false,
             last_output: String::new(),
             show_details: false,
             service_lines: ["OpenSimulator", "Registration", "RemoteAdmin"]
@@ -453,6 +466,7 @@ impl WorldDock {
         let sender = self.operation_sender.clone();
         self.active_operation = Some(operation);
         self.last_operation = operation.label().to_owned();
+        self.operation_message_kind = OperationMessageKind::InProgress;
 
         thread::spawn(move || {
             let script = project_root.join("scripts").join(operation.script_name());
@@ -525,9 +539,13 @@ impl WorldDock {
             }
             self.active_operation = None;
             self.last_output = result.output;
-            self.last_operation = match (&result.error, result.exit_code) {
-                (Some(error), _) => error.clone(),
-                (None, Some(0)) => match result.operation {
+            let completion_message = match (&result.error, result.exit_code) {
+                (Some(error), _) => {
+                    self.last_operation = error.clone();
+                    self.operation_message_kind = OperationMessageKind::Error;
+                    None
+                }
+                (None, Some(0)) => Some(match result.operation {
                     Operation::Start
                         if self.last_output.contains("All required services are ready") =>
                     {
@@ -552,18 +570,33 @@ impl WorldDock {
                     Operation::Stop => "Graceful shutdown completed.".to_owned(),
                     Operation::Restart => "Shutdown and restart checks completed.".to_owned(),
                     Operation::Recover => "Safe recovery check completed.".to_owned(),
-                },
+                }),
                 (None, code) => {
                     let summary = format!(
                         "{} failed with exit code {}.",
                         result.operation.script_name(),
                         code.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
                     );
-                    operation_error_summary(&self.last_output)
+                    let message = operation_error_summary(&self.last_output)
                         .map(|detail| format!("{summary} {detail}"))
-                        .unwrap_or(summary)
+                        .unwrap_or(summary);
+                    self.last_operation = message;
+                    self.operation_message_kind = OperationMessageKind::Error;
+                    None
                 }
             };
+            if let Some(message) = completion_message {
+                self.last_operation = format!(
+                    "{} finished; verifying service status…",
+                    result.operation.label()
+                );
+                self.operation_message_kind = OperationMessageKind::InProgress;
+                self.pending_completion = Some((result.operation, message));
+                self.completion_needs_fresh_status = self.status_check_in_progress;
+                if !self.status_check_in_progress {
+                    self.refresh_status();
+                }
+            }
             if self.exit_after_stop && result.operation == Operation::Stop {
                 self.exit_after_stop = false;
                 self.exit_status_check_active = false;
@@ -572,6 +605,7 @@ impl WorldDock {
                     self.exit_requested = true;
                 } else {
                     self.exit_requested = false;
+                    self.operation_message_kind = OperationMessageKind::Error;
                     self.last_operation = format!(
                         "Exit cancelled; the Dock remains open because shutdown was not verified. {}",
                         self.last_operation
@@ -745,6 +779,22 @@ impl WorldDock {
             self.update_tray_status();
         }
 
+        if self.completion_needs_fresh_status && !self.status_check_in_progress {
+            self.completion_needs_fresh_status = false;
+            self.refresh_status();
+        }
+
+        if let Some((operation, message)) = self.pending_completion.clone() {
+            if completion_matches_status(operation, &self.service_lines) {
+                self.last_operation = message;
+                self.operation_message_kind = OperationMessageKind::Success;
+                self.pending_completion = None;
+            } else {
+                self.last_operation = completion_wait_message(operation).to_owned();
+                self.operation_message_kind = OperationMessageKind::InProgress;
+            }
+        }
+
         if self.exit_after_stop && self.active_operation.is_none() {
             if self.exit_needs_fresh_status {
                 self.exit_needs_fresh_status = false;
@@ -774,6 +824,7 @@ impl WorldDock {
         {
             self.exit_requested = true;
             self.last_operation = "Services are verified stopped. Exiting.".to_owned();
+            self.operation_message_kind = OperationMessageKind::Success;
             return;
         }
 
@@ -784,6 +835,7 @@ impl WorldDock {
                     .to_owned();
         } else {
             self.last_operation = "Checking services before graceful shutdown…".to_owned();
+            self.operation_message_kind = OperationMessageKind::InProgress;
             self.start_exit_status_check();
         }
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
@@ -1086,24 +1138,28 @@ impl eframe::App for WorldDock {
                 });
             });
 
-            if let Some(operation) = self.active_operation {
-                ui.label(
-                    RichText::new(operation.label())
-                        .small()
-                        .color(Color32::from_rgb(244, 191, 82)),
-                );
-            } else if !self.last_operation.is_empty() {
-                let lowered = self.last_operation.to_ascii_lowercase();
-                let color = if ["failed", "error", "cancelled", "could not", "not verified"]
-                    .iter()
-                    .any(|marker| lowered.contains(marker))
-                {
-                    Color32::from_rgb(255, 117, 117)
-                } else {
-                    Color32::from_gray(190)
-                };
-                ui.label(RichText::new(&self.last_operation).small().color(color));
-            }
+            let operation_message = self
+                .active_operation
+                .map(Operation::label)
+                .unwrap_or(&self.last_operation);
+            let operation_color = match self.active_operation.map(|_| OperationMessageKind::InProgress).unwrap_or(self.operation_message_kind) {
+                OperationMessageKind::Success => Color32::from_rgb(86, 207, 133),
+                OperationMessageKind::InProgress => Color32::from_rgb(244, 191, 82),
+                OperationMessageKind::Error => Color32::from_rgb(255, 117, 117),
+            };
+            ui.add_space(8.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), 58.0),
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    ui.label(
+                        RichText::new(operation_message)
+                            .size(18.0)
+                            .strong()
+                            .color(operation_color),
+                    );
+                },
+            );
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 ui.weak("Closing hides the Dock in the tray. Exit gracefully stops services and closes only after shutdown is verified.");
@@ -1317,6 +1373,30 @@ fn service_color(status: &str) -> Color32 {
     }
 }
 
+fn completion_matches_status(operation: Operation, services: &[ServiceLine]) -> bool {
+    if services.len() != 3 {
+        return false;
+    }
+    match operation {
+        Operation::Stop => services.iter().all(|service| service.status == "STOPPED"),
+        Operation::Start | Operation::Restart => {
+            services.iter().all(|service| service.status == "RUNNING")
+        }
+        Operation::Recover => services
+            .iter()
+            .all(|service| service.status != "CHECKING" && service.status != "UNKNOWN"),
+    }
+}
+
+fn completion_wait_message(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Stop => "Waiting for all three services to show STOPPED…",
+        Operation::Start => "Waiting for all three services to show RUNNING…",
+        Operation::Restart => "Waiting for all three services to show RUNNING…",
+        Operation::Recover => "Waiting for the service indicators to refresh…",
+    }
+}
+
 fn operation_error_summary(output: &str) -> Option<String> {
     let mut lines = output.lines().map(str::trim);
     let line = lines
@@ -1514,5 +1594,27 @@ mod tests {
             process_id: Some(123),
             can_start_missing_service: false,
         }));
+    }
+
+    #[test]
+    fn stop_completion_waits_for_all_three_stopped_indicators() {
+        let services = ["STOPPED", "STOPPED", "RUNNING"]
+            .into_iter()
+            .map(|status| ServiceLine {
+                name: "service",
+                status: status.to_owned(),
+                detail: String::new(),
+            })
+            .collect::<Vec<_>>();
+        assert!(!completion_matches_status(Operation::Stop, &services));
+
+        let services = services
+            .into_iter()
+            .map(|mut service| {
+                service.status = "STOPPED".to_owned();
+                service
+            })
+            .collect::<Vec<_>>();
+        assert!(completion_matches_status(Operation::Stop, &services));
     }
 }
