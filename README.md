@@ -2,17 +2,25 @@
 
 **Release:** `1.0.0` — current working-world baseline. The next development phase is `1.1`.
 
-Woz's World is a Garage Alchemy project for AI-assisted 3D creation, collaborative learning and creative experimentation. Blender is our shared workshop; OpenSimulator is the first local testing destination. Second Life, IMVU and 3D printing are possible later destinations, each with different formats and permissions.
+Woz's World is an open creative workshop from [Garage Alchemy](https://garage.dia.net.au/), exploring what we can build when 3D artists, hobbyists and AI work together.
 
-We want people to enjoy making things, keep their minds active and join in without first becoming programmers or systems administrators. The motto is: “Take AI into the garage and see if it actually works.”
+I've always enjoyed the building side of games and virtual worlds. Quite often, building the house is more interesting than fighting the monsters. So why not make the building itself the point?
+
+Blender is our common workshop. OpenSimulator gives us an independent virtual world in which to explore, build and test our creations. Second Life, IMVU and 3D printing are other creative destinations we'd like to explore, each with its own formats and permissions.
+
+The idea is to keep our minds active, learn new skills and enjoy making things together, without everyone needing to become a programmer or systems administrator first. The tools should serve the hobby, not become the hobby.
+
+> Take AI into the garage and see if it actually works.
 
 ## Status
 
 This repository is a Windows-local OpenSimulator setup and creative-workflow research project. Its installer creates a separate standalone world, generates fresh credentials and a region identity, chooses a procedural 512 × 512 island, initializes its database, starts a local account page and can launch Aurora. Pinned avatar packages can be fetched to ignored local folders. They are not redistributed here. Starter-avatar selection and a finished avatar-choice portal remain future work.
 
-The intended first use is a contributor's own cloned directory. It does not connect to the existing Woz's World instance, copy its accounts or inventory, configure a router, or enable Hypergrid. Do not expose the local-only defaults to a network.
+The installer is intended to give each contributor an independent world of their own. It does not connect to the existing Woz's World instance, copy its accounts or inventory, configure a router, or enable Hypergrid. Do not expose the local-only defaults to a network.
 
 ## Clone and install
+
+You can work with the scripts directly or ask Codex to help set up your world. Give it the repository URL and ask it to clone the project into a new directory, read [AGENTS.md](AGENTS.md) and follow the [installation guide](docs/INSTALLATION.md). You do not need access to anyone else's world or accounts.
 
 Prerequisites: 64-bit Windows, PowerShell 7, Git, and Windows Firewall enabled with inbound default set to Block. Internet is needed for first-run downloads. Aurora is separately installed. The installer uses the same local .NET 8.0.34 runtime as the existing working world. .NET 8 reached end of support on 10 November 2026; the compatibility trade-off and local-only boundary are documented in [dependencies and limitations](docs/DEPENDENCIES.md).
 
@@ -44,6 +52,8 @@ pwsh -NoProfile -File .\scripts\Install-WorldDock.ps1
 
 ## Version 1.0.0 and next phase
 
+The original local world is running. The independent installer is a first release, not yet an end-to-end verified deployment on a separate machine. The [validation checkpoint](docs/DEPENDENCIES.md#version-100-validation-checkpoint) explains what has been tested and what remains to be checked.
+
 Version 1.0.0 represents the current working local world and its independent-install baseline. The intended 1.1 phase will refine installation, select starter avatars and simplify onboarding. Known viewer, Dock and network limitations are recorded in `docs/DEPENDENCIES.md` and `docs/SECURITY.md`.
 
 ## Licences
@@ -58,4 +68,18 @@ Original software and documentation are provided under [MIT](LICENSE). Original 
 - `controller/` — optional Windows World Dock (Rust); not required to run the simulator.
 - `docs/` — install, security, dependency, licensing and roadmap notes.
 
-Operational requirements and optional creative/development tools are separated in [dependency notes](docs/DEPENDENCIES.md). Read [Codex operating instructions](AGENTS.md) before making changes. Original code/documentation use MIT; explicitly identified project-created models and textures use CC0 1.0. Third-party licensing conditions remain in force; see [licensing and provenance](docs/LICENSING.md).
+Operational requirements and optional creative/development tools are separated in [dependency notes](docs/DEPENDENCIES.md). Read [Codex operating instructions](AGENTS.md) before making changes.
+
+## Built on the work of others
+
+This project draws on the work of the OpenSimulator, Aurora Viewer, Blender and Ruth2/Roth2 communities, alongside other open-source projects and creative contributors. The [upstream references and acknowledgements](docs/UPSTREAMS.md) provide links and further details. Our work does not replace or claim ownership of theirs.
+
+## Join the workshop
+
+You don't have to be an engineer to contribute. Ideas, 3D models, textures, avatar designs, installation feedback and discoveries are all welcome. Use the [GitHub issues](https://github.com/PopeKael/Wozs-World/issues) to share ideas or report problems. Please include source and licensing information when contributing assets.
+
+## Support the workshop ☕
+
+Woz's World is a Garage Alchemy experiment shared openly for others to explore and build upon. There is no obligation to pay for participation. If you enjoy the work and would like to support future experiments, you are welcome to [Buy Me a Coffee](https://buymeacoffee.com/warrengerdes) or [Join the Tribe on Patreon](https://www.patreon.com/c/chanyawazza).
+
+**Build something useful. Give it away. Let appreciation take care of itself.**
