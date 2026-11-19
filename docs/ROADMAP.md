@@ -31,7 +31,7 @@
 
 - Implemented: the simulator and local registration service are managed independently, with separate process identity, readiness, port health and logs. RemoteAdmin has its own health and shutdown-port checks.
 - Implemented: repeated Start is duplicate-safe; Stop is graceful and verifies ports are released; Restart verifies shutdown before starting; recovery clears stale records and only force-stops verified unresponsive project-owned processes.
-- Implemented: system tray status, Open/Start/Stop/Restart/Exit menu, close-to-tray behavior, per-service status, verified-shutdown Exit and safe recovery. See [World Dock lifecycle verification](WORLDDOCK-LIFECYCLE.md) for installed-world acceptance results; tray-menu interaction remains visually unverified in the current CLI-only pass.
+- Implemented and manually accepted: system tray status and controls, close-to-tray behavior, per-installation single-instance activation, verified-shutdown Exit, and operation messages synchronized with service status. See [World Dock lifecycle verification](WORLDDOCK-LIFECYCLE.md).
 - Keep future Hypergrid and optional account/asset services separately observable; a healthy registration page must not imply that the simulator is healthy.
 
 ## 4. Original creative assets

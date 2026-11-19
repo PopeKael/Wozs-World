@@ -1,6 +1,6 @@
 # Woz's World (WOW)
 
-**Release:** `1.0.0` — current working-world baseline. The next development phase is `1.1`.
+**Release:** `1.1.0` — current stable baseline. Starter-avatar selection and simplified onboarding remain on the roadmap.
 
 Woz's World is an open creative workshop from [Garage Alchemy](https://garage.dia.net.au/), exploring what we can build when 3D artists, hobbyists and AI work together.
 
@@ -50,11 +50,11 @@ Optional World Dock build:
 pwsh -NoProfile -File .\scripts\Install-WorldDock.ps1
 ```
 
-## Version 1.0.0 and next phase
+## Version 1.1.0
 
 The original local world is running. The independent installer is a first release, not yet an end-to-end verified deployment on a separate machine. The [validation checkpoint](docs/DEPENDENCIES.md#version-100-validation-checkpoint) explains what has been tested and what remains to be checked.
 
-Version 1.0.0 represents the current working local world and its independent-install baseline. Version 1.1 is refining installation, standardizing the local-only Standalone Hypergrid architecture, selecting starter avatars and simplifying onboarding. External Hypergrid access remains separate future work. Known viewer, Dock and network limitations are recorded in `docs/DEPENDENCIES.md` and `docs/SECURITY.md`.
+Version 1.1.0 is the current stable baseline, including the approved World Dock service lifecycle and presentation. Starter-avatar selection, a simple first-login onboarding flow and broader avatar diversity remain future work on the roadmap. External Hypergrid access remains separate future work. Known viewer and network limitations are recorded in `docs/DEPENDENCIES.md` and `docs/SECURITY.md`.
 
 ## Licences
 

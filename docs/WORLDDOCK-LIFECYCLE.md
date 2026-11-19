@@ -18,7 +18,7 @@ OpenSimulator owns the world listener (TCP and UDP) and its RemoteAdmin listener
 
 - The main window shows OpenSimulator, RemoteAdmin and registration status separately.
 - Start, Stop and Restart are available in the window and system tray. The tray icon colour and tooltip show overall status; its menu also provides Open and Exit.
-- Closing the window minimizes it to the tray. Exit closes World Dock only; Stop World shuts down the services.
+- Closing the window minimizes it to the tray. Exit closes immediately when a recent check confirms all services are stopped; otherwise it runs verified graceful shutdown before closing.
 - If a service is partly ready or unhealthy, the Dock retains Stop/Restart access so the operator can recover it instead of leaving it unmanaged.
 - PowerShell scripts in `scripts/` provide the same lifecycle outside the Dock. Process records, registration control token and service logs stay under ignored local state.
 - New installs use their bundled Python runtime. Existing installations without that runtime may use `python.exe` from `PATH`; the selected executable and process identity are recorded and checked before Stop or recovery.
@@ -55,4 +55,8 @@ The actual installed world was then exercised through its PowerShell service scr
 
 The isolated lifecycle harness was rerun under Windows PowerShell 5.1 after the compatibility fixes. All ten cases passed: duplicate-safe Start, each partial-start recovery, idempotent Stop, two Restarts, partial startup rollback with an unrelated port owner preserved, stale state cleanup, refusing recovery of a responsive service, recovery of an owned unresponsive fixture and rejection of a forged PID record.
 
-The Dock source now keeps Start/Stop/Restart operations serialized, shows the latest operation result and a concise actual error in the main window, and makes Exit run verified Stop before closing. A failed Stop leaves the Dock open. `cargo fmt --check` and `cargo build --release --locked` passed. The new executable was deployed at the unchanged Start menu shortcut target, and its SHA-256 matched the release build. The system-tray menu and close-to-tray interaction were not visually exercised in this CLI-only pass to avoid taking control of the desktop.
+The Dock source keeps Start/Stop/Restart operations serialized, shows the latest operation result and actual errors, and makes Exit run verified Stop before closing. A failed Stop leaves the Dock open. The executable was deployed at the unchanged Start menu shortcut target.
+
+## Manual acceptance approval
+
+Date: 2026-11-19. The user confirmed that World Dock passed manual acceptance testing and approved the release. The accepted baseline includes service lifecycle controls, tray behavior, single-instance activation, Exit handling, and centred colour-coded operation messages synchronized with the three service indicators. This record reflects the user's confirmation; no additional tests were run for release publication.
