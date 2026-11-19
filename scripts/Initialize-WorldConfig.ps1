@@ -8,6 +8,8 @@ $openSimIni = Join-Path $serverBin 'OpenSim.ini'
 $regionsIni = Join-Path $serverBin 'Regions\Regions.ini'
 $openSimTemplate = Join-Path $projectRoot 'config\OpenSim.ini.template'
 $regionsTemplate = Join-Path $projectRoot 'config\Regions.ini.template'
+$standaloneCommonIni = Join-Path $serverBin 'config-include\StandaloneCommon.ini'
+$standaloneCommonExample = "$standaloneCommonIni.example"
 $runtimeConfig = Join-Path $serverBin 'OpenSim.runtimeconfig.json'
 $sqliteSource = Join-Path $projectRoot 'runtime\sqlite3\sqlite3.dll'
 $sqliteTarget = Join-Path $serverBin 'sqlite3.dll'
@@ -99,6 +101,34 @@ if ($stockHash -ne $expectedStockIniHash) {
 
 $openSimText = [System.IO.File]::ReadAllText($openSimTemplate)
 $regionsText = [System.IO.File]::ReadAllText($regionsTemplate)
+$activeArchitecture = [regex]::Matches($openSimText, '(?m)^[ \t]*Include-Architecture[ \t]*=[ \t]*"config-include/StandaloneHypergrid\.ini"[ \t]*$')
+if ($activeArchitecture.Count -ne 1) {
+    throw 'The OpenSim template must select StandaloneHypergrid.ini exactly once for new installations.'
+}
+
+$commonSource = if (Test-Path -LiteralPath $standaloneCommonIni) { $standaloneCommonIni } else { $standaloneCommonExample }
+if (-not (Test-Path -LiteralPath $commonSource)) {
+    throw "The OpenSimulator package is missing its StandaloneCommon.ini.example: $standaloneCommonExample"
+}
+$standaloneCommonText = [System.IO.File]::ReadAllText($commonSource)
+$hypergridSections = [regex]::Matches($standaloneCommonText, '(?ms)(^[ \t]*\[Hypergrid\][ \t]*\r?\n)(?<body>.*?)(?=^[ \t]*\[[^\]\r\n]+\][ \t]*\r?$|\z)')
+if ($hypergridSections.Count -ne 1) {
+    throw 'StandaloneCommon.ini must contain exactly one [Hypergrid] section.'
+}
+$hypergridSection = $hypergridSections[0]
+$hypergridBody = $hypergridSection.Groups['body'].Value
+foreach ($key in @('HomeURI', 'GatekeeperURI')) {
+    $keyPattern = '(?m)^[ \t]*;?[ \t]*' + [regex]::Escape($key) + '[ \t]*=.*$'
+    $keyLines = [regex]::Matches($hypergridBody, $keyPattern)
+    if ($keyLines.Count -ne 1) {
+        throw "StandaloneCommon.ini [Hypergrid] must contain exactly one $key setting; found $($keyLines.Count)."
+    }
+    $replacement = '    ' + $key + ' = "${Const|BaseURL}:${Const|PublicPort}"'
+    $keyLine = $keyLines[0]
+    $hypergridBody = $hypergridBody.Substring(0, $keyLine.Index) + $replacement + $hypergridBody.Substring($keyLine.Index + $keyLine.Length)
+}
+$commonBodyStart = $hypergridSection.Index + $hypergridSection.Groups[1].Length
+$standaloneCommonText = $standaloneCommonText.Substring(0, $commonBodyStart) + $hypergridBody + $standaloneCommonText.Substring($commonBodyStart + $hypergridSection.Groups['body'].Length)
 if (([regex]::Matches($openSimText, '__GENERATE_LOCAL_ONLY__')).Count -ne 1) {
     throw 'The OpenSim template must contain exactly one local console-password marker.'
 }
@@ -153,6 +183,7 @@ $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($openSimIni, $openSimText, $utf8WithoutBom)
 [System.IO.Directory]::CreateDirectory((Split-Path -Parent $regionsIni)) | Out-Null
 [System.IO.File]::WriteAllText($regionsIni, $regionsText, $utf8WithoutBom)
+[System.IO.File]::WriteAllText($standaloneCommonIni, $standaloneCommonText, $utf8WithoutBom)
 
 New-Item -ItemType Directory -Path $privateRoot -Force | Out-Null
 New-Item -ItemType File -Path $ownerCredentials -ErrorAction Stop | Out-Null

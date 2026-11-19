@@ -58,7 +58,7 @@ if (Test-Path -LiteralPath $fixturePath) {
     if ($fixture.Purpose -eq 'WOW-WORLDDOCK-LIFECYCLE-TEST' -and $state.PythonPath -and [System.IO.Path]::GetFullPath([string]$state.PythonPath) -ieq [System.IO.Path]::GetFullPath([string]$fixture.PythonPath)) { $python = [string]$fixture.PythonPath; $fixtureMode = $true }
 }
 $identity = Get-Identity ([int]$state.ProcessId)
-if (-not $identity -or -not $identity.Path -or [System.IO.Path]::GetFullPath($identity.Path) -ine [System.IO.Path]::GetFullPath($python) -or -not $identity.CommandLine.Contains('server.py', [StringComparison]::OrdinalIgnoreCase)) {
+if (-not $identity -or -not $identity.Path -or [System.IO.Path]::GetFullPath($identity.Path) -ine [System.IO.Path]::GetFullPath($python) -or $identity.CommandLine.IndexOf('server.py', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw "Recorded registration PID $($state.ProcessId) does not match the project Python executable and server.py command line. Refusing to stop it."
 }
 if ($state.ProcessStartUtc -and $identity.StartedUtc -and ([DateTime]$state.ProcessStartUtc).ToUniversalTime().ToString('o') -ne ([DateTime]$identity.StartedUtc).ToUniversalTime().ToString('o')) {

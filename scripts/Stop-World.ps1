@@ -87,7 +87,7 @@ if (-not $serverProcess.Path -or ([System.IO.Path]::GetFullPath($serverProcess.P
     throw 'The recorded PID does not point to the project-local .NET host. Refusing to stop an unrelated process.'
 }
 $identity = Get-WorldDockProcessIdentity -ProcessId $serverProcess.Id
-if (-not $identity -or -not $identity.CommandLine.Contains('OpenSim.dll', [StringComparison]::OrdinalIgnoreCase)) {
+if (-not $identity -or $identity.CommandLine.IndexOf('OpenSim.dll', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
     throw 'The recorded process command line does not identify this project OpenSimulator instance. Refusing to stop it.'
 }
 if ($state.ProcessStartUtc -and $serverProcess.StartTime.ToUniversalTime().ToString('o') -ne ([DateTime]$state.ProcessStartUtc).ToUniversalTime().ToString('o')) {

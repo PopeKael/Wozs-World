@@ -46,7 +46,7 @@ if (Test-Path -LiteralPath $statePath) {
     $existing = Get-Process -Id ([int]$state.ProcessId) -ErrorAction SilentlyContinue
     if ($existing) {
         $actual = Get-WorldDockProcessIdentity -ProcessId ([int]$state.ProcessId)
-        if (-not $actual -or [System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath([string]$fixture.PythonPath) -or -not $actual.CommandLine.Contains('WorldDockLifecycleWorker.py', [StringComparison]::OrdinalIgnoreCase)) { throw 'The fixture OpenSimulator PID identity differs; refusing duplicate start or termination.' }
+        if (-not $actual -or [System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath([string]$fixture.PythonPath) -or $actual.CommandLine.IndexOf('WorldDockLifecycleWorker.py', [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'The fixture OpenSimulator PID identity differs; refusing duplicate start or termination.' }
         if (-not (Test-Healthy ([int]$ports.worldPort)) -or -not (Test-TcpOpen ([int]$ports.remoteAdminPort)) -or -not (Test-UdpOpen ([int]$ports.worldPort))) { throw 'Fixture OpenSimulator is recorded but not responding on each service port; use the recovery path.' }
         Write-Output "Fixture OpenSimulator already ready (PID $($state.ProcessId)); duplicate start prevented."
     }

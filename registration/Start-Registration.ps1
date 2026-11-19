@@ -38,7 +38,7 @@ function Test-RegistrationIdentity($Record) {
     $actual = Get-RegistrationIdentity ([int]$Record.ProcessId)
     if (-not $actual -or -not $actual.Path) { return $false }
     if ([System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath($python)) { return $false }
-    if (-not $actual.CommandLine.Contains('server.py', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($actual.CommandLine.IndexOf('server.py', [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
     if ($Record.ProcessStartUtc -and $actual.StartedUtc -and ([DateTime]$Record.ProcessStartUtc).ToUniversalTime().ToString('o') -ne ([DateTime]$actual.StartedUtc).ToUniversalTime().ToString('o')) { return $false }
     return $true
 }
@@ -91,8 +91,12 @@ if (Test-TcpOpen $port) {
 }
 
 $tokenBytes = New-Object byte[] 32
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
-$token = [Convert]::ToHexString($tokenBytes)
+$random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $random.GetBytes($tokenBytes)
+    $token = (($tokenBytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+finally { $random.Dispose() }
 [System.IO.File]::WriteAllText($tokenPath, $token, [System.Text.Encoding]::ASCII)
 [Array]::Clear($tokenBytes, 0, $tokenBytes.Length)
 $stdout = Join-Path $logsRoot 'registration.stdout.log'
@@ -101,11 +105,11 @@ $process = Start-Process -FilePath $python -ArgumentList @('"' + $scriptPath + '
 $identity = $null
 for ($identityAttempt = 0; $identityAttempt -lt 10; $identityAttempt++) {
     $identity = Get-RegistrationIdentity $process.Id
-    if ($identity -and $identity.Path -and [System.IO.Path]::GetFullPath($identity.Path) -ieq [System.IO.Path]::GetFullPath($python) -and $identity.CommandLine.Contains('server.py', [StringComparison]::OrdinalIgnoreCase)) { break }
+    if ($identity -and $identity.Path -and [System.IO.Path]::GetFullPath($identity.Path) -ieq [System.IO.Path]::GetFullPath($python) -and $identity.CommandLine.IndexOf('server.py', [StringComparison]::OrdinalIgnoreCase) -ge 0) { break }
     if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 100
 }
-if (-not $identity -or -not $identity.Path -or [System.IO.Path]::GetFullPath($identity.Path) -ine [System.IO.Path]::GetFullPath($python) -or -not $identity.CommandLine.Contains('server.py', [StringComparison]::OrdinalIgnoreCase)) {
+if (-not $identity -or -not $identity.Path -or [System.IO.Path]::GetFullPath($identity.Path) -ine [System.IO.Path]::GetFullPath($python) -or $identity.CommandLine.IndexOf('server.py', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
     $stderrTail = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Tail 12 | Out-String } else { '' }
     throw "Could not verify the newly started registration process identity for PID $($process.Id) (alive=$([bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue)); error log: $stderr). $stderrTail"
 }
@@ -114,18 +118,26 @@ $state = [ordered]@{ ProcessId = $process.Id; PythonPath = [System.IO.Path]::Get
 Write-State $state
 
 $ready = $false
+$lastHealthCheck = 'No HTTP health response was received.'
+$lastOwners = @()
+$lastIdentityMatch = $false
 for ($attempt = 0; $attempt -lt 20; $attempt++) {
     if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { break }
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/health" -TimeoutSec 1
-        if ($response.StatusCode -eq 200 -and $response.Content -match '"status"\s*:\s*"ready"' -and ($LifecycleTestFixture -or (@(Get-TcpOwners $port) -contains [int]$process.Id)) -and (Test-RegistrationIdentity $state)) { $ready = $true; break }
-    } catch { }
+        $lastHealthCheck = "HTTP $($response.StatusCode): $($response.Content)"
+        $lastOwners = @(Get-TcpOwners $port)
+        $lastIdentityMatch = Test-RegistrationIdentity $state
+        if ($response.StatusCode -eq 200 -and $response.Content -match '"status"\s*:\s*"ready"' -and ($LifecycleTestFixture -or ($lastOwners -contains [int]$process.Id)) -and $lastIdentityMatch) { $ready = $true; break }
+    } catch { $lastHealthCheck = $_.Exception.Message }
     Start-Sleep -Milliseconds 500
 }
 if (-not $ready) {
     $stillOwned = Test-RegistrationIdentity $state
     if ($stillOwned) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue; Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue }
     if (-not (Test-TcpOpen $port)) { Remove-Item -LiteralPath $statePath, $tokenPath -Force -ErrorAction SilentlyContinue }
-    throw "Registration service failed its /health readiness check on HTTP/$port. See $stdout and $stderr."
+    $alive = [bool](Get-Process -Id $process.Id -ErrorAction SilentlyContinue)
+    $ownerSummary = if ($lastOwners.Count) { $lastOwners -join ', ' } else { 'none reported' }
+    throw "Registration service failed readiness on HTTP/$port. Last health result: $lastHealthCheck; listener owner PID(s): $ownerSummary; recorded process alive: $alive; identity verified: $lastIdentityMatch. See $stdout and $stderr."
 }
 Write-Output "Registration service is ready at http://127.0.0.1:$port/login (PID $($process.Id)); health endpoint passed."

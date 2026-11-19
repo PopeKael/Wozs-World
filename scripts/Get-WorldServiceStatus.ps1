@@ -47,7 +47,7 @@ function Test-RecordedProcess($Record, [string]$ExpectedPath, [string]$CommandNe
     $actual = Get-ProcessInfo -ProcessId ([int]$Record.ProcessId)
     if (-not $actual -or -not $actual.Path) { return $false }
     if ([System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath($ExpectedPath)) { return $false }
-    if ($actual.CommandLine -and -not $actual.CommandLine.Contains($CommandNeedle, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($actual.CommandLine -and $actual.CommandLine.IndexOf($CommandNeedle, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
     if ($Record.ProcessStartUtc -and $actual.StartedUtc -and ([DateTime]$Record.ProcessStartUtc).ToUniversalTime().ToString('o') -ne ([DateTime]$actual.StartedUtc).ToUniversalTime().ToString('o')) { return $false }
     return $true
 }

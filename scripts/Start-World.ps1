@@ -34,8 +34,6 @@ foreach ($requiredPath in @($serverBin, $dotnet, $sqliteDll, $openSimIni, $regio
     }
 }
 
-& (Join-Path $projectRoot 'scripts\Install-LocalFirewallBoundary.ps1')
-
 $sqliteHash = (Get-FileHash -LiteralPath $sqliteDll -Algorithm SHA256).Hash
 if ($sqliteHash -ne '4B59D3CDED9DC1608544160F3B4B10AC974C6AC0D6FFC23064E5F4C8DBD05AEA') {
     throw "The project-local SQLite runtime is not the verified 3.54.1 binary (SHA-256 $sqliteHash)."
@@ -128,7 +126,7 @@ try {
                 throw "PID $($previousState.ProcessId) is occupied by a different process. Refusing to act on it."
             }
             $identity = Get-WorldDockProcessIdentity -ProcessId $previousProcess.Id
-            if (-not $identity -or -not $identity.CommandLine.Contains('OpenSim.dll', [StringComparison]::OrdinalIgnoreCase)) {
+            if (-not $identity -or $identity.CommandLine.IndexOf('OpenSim.dll', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
                 throw "PID $($previousState.ProcessId) does not have the expected OpenSim.dll command line. Refusing to adopt it."
             }
             if ($previousState.ProcessStartUtc -and $previousProcess.StartTime.ToUniversalTime().ToString('o') -ne ([DateTime]$previousState.ProcessStartUtc).ToUniversalTime().ToString('o')) {

@@ -19,7 +19,7 @@ This builds from the locked `controller/Cargo.lock` into ignored `controller/tar
 - **Restart World** completes and verifies Stop before starting again.
 - **Safe recovery** clears stale records only after their recorded process is absent and ports are free. The optional force route requires confirmation, verifies executable, command line, start time and port ownership, and refuses to kill a service that still passes health checks.
 - The Dock independently displays simulator, RemoteAdmin and registration health. Its tray icon colour and tooltip follow world status; the tray menu provides **Open**, **Start**, **Stop**, **Restart** and **Exit**.
-- Closing the window hides it to the system tray. **Exit** closes only the Dock; use **Stop World** to shut down services.
+- Closing the window hides it to the system tray. **Exit** performs the verified graceful Stop sequence and closes the Dock only after every service port is released. If shutdown fails, the Dock stays open and reports the error.
 - The same lifecycle is available through `scripts/Start-World.ps1`, `scripts/Stop-World.ps1`, `scripts/Restart-World.ps1`, `scripts/Get-WorldServiceStatus.ps1` and `scripts/Recover-World.ps1`.
 - Each clean install chooses its own port set; the Dock reads `.local/install.json` and project-local process records rather than assuming port 9000.
 - New installs use their bundled Python for registration. Existing installations without that runtime may use `python.exe` from `PATH`; the selected executable is recorded and verified before shutdown or recovery.

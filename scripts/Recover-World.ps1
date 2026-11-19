@@ -41,7 +41,7 @@ function Get-Identity([int]$Id) {
 function Assert-Owned($Record, [string]$Executable, [string]$Needle, [int[]]$Ports, [bool[]]$UdpFlags) {
     $actual = Get-Identity ([int]$Record.ProcessId)
     if (-not $actual -or -not $actual.Path -or [System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath($Executable)) { throw "PID $($Record.ProcessId) no longer matches the recorded project's executable; refusing recovery." }
-    if (-not $actual.CommandLine.Contains($Needle, [StringComparison]::OrdinalIgnoreCase)) { throw "PID $($Record.ProcessId) command line no longer identifies $Needle; refusing recovery." }
+    if ($actual.CommandLine.IndexOf($Needle, [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw "PID $($Record.ProcessId) command line no longer identifies $Needle; refusing recovery." }
     if ($Record.ProcessStartUtc -and $actual.StartedUtc -and ([DateTime]$Record.ProcessStartUtc).ToUniversalTime().ToString('o') -ne ([DateTime]$actual.StartedUtc).ToUniversalTime().ToString('o')) { throw "PID $($Record.ProcessId) has a different start time; refusing recovery of a reused PID." }
     for ($i=0; $i -lt $Ports.Count; $i++) {
         $owners = @(Get-Owners $(if ($UdpFlags[$i]) {'udp'} else {'tcp'}) $Ports[$i])

@@ -14,15 +14,15 @@ The idea is to keep our minds active, learn new skills and enjoy making things t
 
 ## Status
 
-This repository is a Windows-local OpenSimulator setup and creative-workflow research project. Its installer creates a separate standalone world, generates fresh credentials and a region identity, chooses a procedural 512 × 512 island, initializes its database, starts a local account page and can launch Aurora. Pinned avatar packages can be fetched to ignored local folders. They are not redistributed here. Starter-avatar selection and a finished avatar-choice portal remain future work.
+This repository is a Windows-local OpenSimulator setup and creative-workflow research project. Its installer creates a separate Standalone Hypergrid world with loopback Home and Gatekeeper URIs, generates fresh credentials and a region identity, chooses a procedural 512 × 512 island, initializes its database, starts a local account page and can launch Aurora. Pinned avatar packages can be fetched to ignored local folders. They are not redistributed here. Starter-avatar selection and a finished avatar-choice portal remain future work.
 
-The installer is intended to give each contributor an independent world of their own. It does not connect to the existing Woz's World instance, copy its accounts or inventory, configure a router, or enable Hypergrid. Do not expose the local-only defaults to a network.
+The intended first use is a contributor's own cloned directory. It does not connect to the existing Woz's World instance, copy its accounts or inventory, configure a router, or advertise an externally reachable Hypergrid endpoint. Hypergrid services initialize locally, but the loopback URIs are not reachable by other grids. Do not expose the local-only defaults to a network.
 
 ## Clone and install
 
 You can work with the scripts directly or ask Codex to help set up your world. Give it the repository URL and ask it to clone the project into a new directory, read [AGENTS.md](AGENTS.md) and follow the [installation guide](docs/INSTALLATION.md). You do not need access to anyone else's world or accounts.
 
-Prerequisites: 64-bit Windows, PowerShell 7, Git, and Windows Firewall enabled with inbound default set to Block. Internet is needed for first-run downloads. Aurora is separately installed. The installer uses the same local .NET 8.0.34 runtime as the existing working world. .NET 8 reached end of support on 10 November 2026; the compatibility trade-off and local-only boundary are documented in [dependencies and limitations](docs/DEPENDENCIES.md).
+Prerequisites: 64-bit Windows, PowerShell 7 and Git. Internet is needed for first-run downloads. World Dock leaves the host's existing Windows Firewall settings untouched. Aurora is separately installed. The installer uses the same local .NET 8.0.34 runtime as the existing working world. .NET 8 reached end of support on 10 November 2026; the compatibility trade-off and local-only boundary are documented in [dependencies and limitations](docs/DEPENDENCIES.md).
 
 ```powershell
 git clone https://github.com/PopeKael/Wozs-World.git
@@ -54,7 +54,7 @@ pwsh -NoProfile -File .\scripts\Install-WorldDock.ps1
 
 The original local world is running. The independent installer is a first release, not yet an end-to-end verified deployment on a separate machine. The [validation checkpoint](docs/DEPENDENCIES.md#version-100-validation-checkpoint) explains what has been tested and what remains to be checked.
 
-Version 1.0.0 represents the current working local world and its independent-install baseline. The intended 1.1 phase will refine installation, select starter avatars and simplify onboarding. Known viewer, Dock and network limitations are recorded in `docs/DEPENDENCIES.md` and `docs/SECURITY.md`.
+Version 1.0.0 represents the current working local world and its independent-install baseline. Version 1.1 is refining installation, standardizing the local-only Standalone Hypergrid architecture, selecting starter avatars and simplifying onboarding. External Hypergrid access remains separate future work. Known viewer, Dock and network limitations are recorded in `docs/DEPENDENCIES.md` and `docs/SECURITY.md`.
 
 ## Licences
 

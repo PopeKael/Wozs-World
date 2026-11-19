@@ -47,8 +47,8 @@ function Start-ForeignListener([int]$Port) {
 try {
     New-Item -ItemType Directory -Path (Join-Path $testRoot '.local'), (Join-Path $testRoot 'logs'), (Join-Path $testRoot 'scripts'), (Join-Path $testRoot 'registration'), (Join-Path $testRoot 'server\OpenSimulator-0.9.3.0\bin') -Force | Out-Null
     $scriptNames = @('Start-World.ps1','Start-WorldLifecycleFixture.ps1','WorldDockLifecycleWorker.py','WorldDockLifecycleForeignListener.py','WorldDock.ProcessIdentity.psm1','Stop-World.ps1','Stop-WorldLifecycleFixture.ps1','Restart-World.ps1','Recover-World.ps1','Get-WorldServiceStatus.ps1')
-    foreach ($name in $scriptNames) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $testRoot 'scripts' $name) }
-    foreach ($name in @('Start-Registration.ps1','Stop-Registration.ps1','server.py')) { Copy-Item -LiteralPath (Join-Path $sourceRoot 'registration' $name) -Destination (Join-Path $testRoot 'registration' $name) }
+    foreach ($name in $scriptNames) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path (Join-Path $testRoot 'scripts') $name) }
+    foreach ($name in @('Start-Registration.ps1','Stop-Registration.ps1','server.py')) { Copy-Item -LiteralPath (Join-Path (Join-Path $sourceRoot 'registration') $name) -Destination (Join-Path (Join-Path $testRoot 'registration') $name) }
     $basePort = Find-FreePortSet
     $install = [ordered]@{ schemaVersion=1; instanceId=[guid]::NewGuid().ToString(); worldPort=$basePort; registrationPort=($basePort+80); remoteAdminPort=($basePort+10000) }
     [System.IO.File]::WriteAllText((Join-Path $testRoot '.local\install.json'), ($install | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
@@ -171,5 +171,5 @@ finally {
     foreach ($id in @($spawned)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
     $resolved = [System.IO.Path]::GetFullPath($testRoot)
     if ($KeepArtifacts) { Write-Warning "Lifecycle test artifacts retained at $resolved" }
-    elseif ($resolved.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolved)) { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue }
+    elseif ($resolved.IndexOf($tempBase, [StringComparison]::OrdinalIgnoreCase) -eq 0 -and (Test-Path -LiteralPath $resolved)) { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue }
 }

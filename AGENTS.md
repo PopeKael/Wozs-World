@@ -7,7 +7,7 @@ WOW is a Garage Alchemy learning project for AI-assisted 3D creation. The usual 
 ## Safety boundaries
 
 - Keep each checkout and simulator instance independent. Resolve paths from the repository root; never assume a drive letter or username.
-- The default server is local-only. Do not change `127.0.0.1`, firewall blocks, advertised region addresses, registration binding, RemoteAdmin binding or router settings to permit LAN/Internet access without a specific user request.
+- Fresh installs use `StandaloneHypergrid.ini`, with `HomeURI` and `GatekeeperURI` set to the local loopback base URL. This initializes Hypergrid services without enabling remote access. Do not change `127.0.0.1`, firewall blocks, advertised region addresses, registration binding, RemoteAdmin binding or router settings to permit LAN/Internet access without a specific user request.
 - Never read, copy, stage or publish `.local`, `server`, `runtime`, `downloads`, `data`, `backups`, `logs`, avatar packages, inventory archives, user screenshots, generated terrain or Blender personal preferences. The live world may contain private accounts and assets.
 - Do not import assets into an existing world or replace an existing terrain/database during testing. Test in a separate clone directory and use backups before any operation that writes world state.
 - Never put credentials, account UUIDs, viewer logs, machine paths, private profile data or local screenshots in tracked files. Generate credentials at install time and retain them only under ignored `.local`.

@@ -40,7 +40,7 @@ if (-not $process) {
     return
 }
 $actual = Get-WorldDockProcessIdentity -ProcessId ([int]$state.ProcessId)
-if (-not $actual -or [System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath([string]$fixture.PythonPath) -or -not $actual.CommandLine.Contains('WorldDockLifecycleWorker.py',[StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture process PID/executable/command line identity failed; refusing shutdown.' }
+if (-not $actual -or [System.IO.Path]::GetFullPath($actual.Path) -ine [System.IO.Path]::GetFullPath([string]$fixture.PythonPath) -or $actual.CommandLine.IndexOf('WorldDockLifecycleWorker.py',[StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'Fixture process PID/executable/command line identity failed; refusing shutdown.' }
 if ($state.ProcessStartUtc -and $process.StartTime.ToUniversalTime().ToString('o') -ne ([DateTime]$state.ProcessStartUtc).ToUniversalTime().ToString('o')) { throw 'Fixture PID start time changed; refusing a potentially reused PID.' }
 foreach ($spec in @(@('tcp',[int]$ports.worldPort),@('udp',[int]$ports.worldPort),@('tcp',[int]$ports.remoteAdminPort))) {
     $owners = @(Get-Owners $spec[0] $spec[1])

@@ -43,9 +43,15 @@ impl Default for Settings {
 
 #[derive(Clone, Debug)]
 enum WorldStatus {
-    Running { process_id: u32 },
-    Starting { process_id: u32 },
-    Unresponsive { process_id: u32 },
+    Running {
+        process_id: u32,
+    },
+    Starting {
+        process_id: u32,
+    },
+    Unresponsive {
+        process_id: u32,
+    },
     ServiceIssue {
         process_id: Option<u32>,
         can_start_missing_service: bool,
@@ -62,7 +68,13 @@ impl WorldStatus {
 
     fn can_start(&self) -> bool {
         matches!(self, Self::Stopped)
-            || matches!(self, Self::ServiceIssue { can_start_missing_service: true, .. })
+            || matches!(
+                self,
+                Self::ServiceIssue {
+                    can_start_missing_service: true,
+                    ..
+                }
+            )
     }
 
     fn can_stop(&self) -> bool {
@@ -219,6 +231,7 @@ struct WorldDock {
     service_lines: Vec<ServiceLine>,
     show_recovery_confirmation: bool,
     exit_requested: bool,
+    exit_after_stop: bool,
     tray_icon: Option<TrayIcon>,
     tray_items: Option<TrayItems>,
 }
@@ -309,6 +322,7 @@ impl WorldDock {
                 .collect(),
             show_recovery_confirmation: false,
             exit_requested: false,
+            exit_after_stop: false,
             tray_icon: None,
             tray_items: None,
         };
@@ -424,12 +438,29 @@ impl WorldDock {
                     Operation::Restart => "Shutdown and restart checks completed.".to_owned(),
                     Operation::Recover => "Safe recovery check completed.".to_owned(),
                 },
-                (None, code) => format!(
-                    "{} failed with exit code {}.",
-                    result.operation.script_name(),
-                    code.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-                ),
+                (None, code) => {
+                    let summary = format!(
+                        "{} failed with exit code {}.",
+                        result.operation.script_name(),
+                        code.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+                    );
+                    operation_error_summary(&self.last_output)
+                        .map(|detail| format!("{summary} {detail}"))
+                        .unwrap_or(summary)
+                }
             };
+            if self.exit_after_stop && result.operation == Operation::Stop {
+                self.exit_after_stop = false;
+                if result.error.is_none() && result.exit_code == Some(0) {
+                    self.exit_requested = true;
+                } else {
+                    self.exit_requested = false;
+                    self.last_operation = format!(
+                        "Exit cancelled; the Dock remains open because shutdown was not verified. {}",
+                        self.last_operation
+                    );
+                }
+            }
             self.last_status_check = Instant::now()
                 .checked_sub(STATUS_REFRESH)
                 .unwrap_or_else(Instant::now);
@@ -676,8 +707,14 @@ impl WorldDock {
                     self.begin_operation(Operation::Restart);
                 }
             } else if event.id == *items.exit.id() {
-                self.exit_requested = true;
-                ctx.send_viewport_cmd(ViewportCommand::Close);
+                if !self.exit_requested && !self.exit_after_stop {
+                    self.exit_after_stop = true;
+                    if self.active_operation.is_some() {
+                        self.last_operation =
+                            "Exit queued; waiting for the current service command to finish."
+                                .to_owned();
+                    }
+                }
             }
         }
     }
@@ -744,6 +781,12 @@ impl eframe::App for WorldDock {
         self.receive_operation_results();
         self.receive_status_results();
         self.process_tray_events(&ctx);
+        if self.exit_after_stop && self.active_operation.is_none() {
+            self.begin_operation(Operation::Stop);
+        }
+        if self.exit_requested && self.active_operation.is_none() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
 
         if ctx.input(|input| input.viewport().close_requested())
             && !self.exit_requested
@@ -760,14 +803,6 @@ impl eframe::App for WorldDock {
 
         if self.last_status_check.elapsed() >= STATUS_REFRESH {
             self.refresh_status();
-        }
-
-        // The server can be ready before PowerShell finishes its final checks.
-        // Let the user stop a verified live world without waiting on that wrapper.
-        if self.active_operation == Some(Operation::Start) && self.status.is_running() {
-            self.active_operation = None;
-            self.last_operation =
-                "World is responding; the start script is finishing its checks.".to_owned();
         }
 
         self.update_tray_status();
@@ -890,10 +925,21 @@ impl eframe::App for WorldDock {
                         .small()
                         .color(Color32::from_rgb(244, 191, 82)),
                 );
+            } else if !self.last_operation.is_empty() {
+                let lowered = self.last_operation.to_ascii_lowercase();
+                let color = if ["failed", "error", "cancelled", "could not", "not verified"]
+                    .iter()
+                    .any(|marker| lowered.contains(marker))
+                {
+                    Color32::from_rgb(255, 117, 117)
+                } else {
+                    Color32::from_gray(190)
+                };
+                ui.label(RichText::new(&self.last_operation).small().color(color));
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.weak("Closing hides the Dock in the tray. Exit closes the Dock; running services stay running.");
+                ui.weak("Closing hides the Dock in the tray. Exit gracefully stops services and closes only after shutdown is verified.");
             });
         });
 
@@ -1101,6 +1147,23 @@ fn service_color(status: &str) -> Color32 {
         "STARTING" => Color32::from_rgb(244, 191, 82),
         "STOPPED" => Color32::from_rgb(145, 155, 169),
         _ => Color32::from_rgb(243, 119, 103),
+    }
+}
+
+fn operation_error_summary(output: &str) -> Option<String> {
+    let mut lines = output.lines().map(str::trim);
+    let line = lines
+        .clone()
+        .find(|line| {
+            let lowered = line.to_ascii_lowercase();
+            lowered.contains("failed") || lowered.contains("error") || lowered.contains("exception")
+        })
+        .or_else(|| lines.find(|line| !line.is_empty()))?;
+    let summary: String = line.chars().take(240).collect();
+    if line.chars().count() > 240 {
+        Some(format!("{summary}…"))
+    } else {
+        Some(summary)
     }
 }
 

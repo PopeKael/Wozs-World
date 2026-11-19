@@ -4,7 +4,7 @@
 
 - 64-bit Windows 10/11, PowerShell 7 and Git.
 - Internet on first run for pinned OpenSimulator, .NET, Python and SQLite packages.
-- Windows Firewall enabled with inbound default set to Block on every effective profile. The installer refuses broad or port-specific inbound allow rules covering its selected ports and never adds inbound allows or router mappings.
+- Windows Firewall configured according to the host owner's policy. World Dock does not inspect or change firewall rules and does not add router mappings.
 - Aurora Viewer for in-world use. It is detected from common install locations or can be provided by path.
 - Optional World Dock: Rust stable/Cargo and the Windows C++ build tools. Optional Blender is not a server dependency.
 
@@ -32,7 +32,9 @@ The installer refuses to overwrite an existing local install. It downloads to `d
 
 The initial `World Owner` account uses the generated estate password in ignored `.local/owner-credentials.txt`, protected by a Windows ACL limited to the current user and LocalSystem. Browser-created visitor accounts are independent. The registration URL uses the generated port and is printed at completion; the service binds to `127.0.0.1` only. World Dock also has its own account form.
 
-The 1.0.0 clean-copy validation reached configuration generation and then stopped at the firewall-profile CIM query in its sandbox. Account creation and Aurora login have not been confirmed in that independent copy; see the [validation checkpoint](DEPENDENCIES.md#version-100-validation-checkpoint).
+Fresh installs use `config-include/StandaloneHypergrid.ini`. The installer creates `StandaloneCommon.ini` from the OpenSimulator package's `.example` file and sets both `HomeURI` and `GatekeeperURI` to the clone's local `BaseURL` and public port. This starts the Hypergrid-capable standalone services while keeping their advertised address on loopback. It does not make the world reachable from another computer or grid. External Hypergrid access would require externally resolvable service and region addresses, corresponding login-service URIs, reachable ports, and a separate firewall/router/security review; none are configured here. See the [upstream Hypergrid instructions](https://opensimulator.dev/wiki/Installing_and_Running_Hypergrid).
+
+The 1.0.0 clean-copy validation reached configuration generation but did not complete the full simulator, account-creation and Aurora-login flow in an independent copy; see the [validation checkpoint](DEPENDENCIES.md#version-100-validation-checkpoint).
 
 Open Aurora using the repository helper:
 
@@ -67,4 +69,4 @@ The Dock is a convenience UI, not required for the world to run. It builds from 
 
 ## Recovery and portability
 
-Each clone chooses unique ports and identity values; database and inventory state remain inside that clone. If startup checks fail, inspect `.local/opensim-process.json` and `logs/`. Do not copy `.local/` or `server/` from another world. To reset an install, stop it, back up the entire private directory, then use a new clone path. Hypergrid compatibility and external access are not tested or enabled.
+Each clone chooses unique ports and identity values; database and inventory state remain inside that clone. If startup checks fail, inspect `.local/opensim-process.json` and `logs/`. Do not copy `.local/` or `server/` from another world. To reset an install, stop it, back up the entire private directory, then use a new clone path. Local Hypergrid service initialization is configured, but remote Hypergrid interoperability is untested and the loopback endpoints intentionally prevent external access.
