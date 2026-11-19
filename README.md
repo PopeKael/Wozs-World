@@ -1,4 +1,3 @@
-Attempting to perform the InitializeDefaultDrives operation on the 'FileSystem' provider failed.
 # Woz's World (WOW)
 
 **Release:** `1.0.0` — current working-world baseline. The next development phase is `1.1`.
