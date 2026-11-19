@@ -2,17 +2,19 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::{
+    ffi::c_void,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    ptr,
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{ffi::OsStrExt, process::CommandExt};
 
 use eframe::egui::{self, Color32, RichText, Vec2, ViewportBuilder, ViewportCommand, WindowLevel};
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,109 @@ compile_error!("Woz's World Dock is a Windows desktop application.");
 
 const STATUS_REFRESH: Duration = Duration::from_secs(5);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const ERROR_ALREADY_EXISTS: u32 = 183;
+const WAIT_OBJECT_0: u32 = 0;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CreateEventW(
+        event_attributes: *mut c_void,
+        manual_reset: i32,
+        initial_state: i32,
+        name: *const u16,
+    ) -> *mut c_void;
+    fn CreateMutexW(
+        mutex_attributes: *mut c_void,
+        initial_owner: i32,
+        name: *const u16,
+    ) -> *mut c_void;
+    fn SetEvent(event: *mut c_void) -> i32;
+    fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+    fn CloseHandle(handle: *mut c_void) -> i32;
+    fn GetLastError() -> u32;
+}
+
+struct SingleInstance {
+    mutex: *mut c_void,
+    activation_event: *mut c_void,
+}
+
+impl SingleInstance {
+    fn for_installation(project_root: &Path) -> io::Result<Option<Self>> {
+        let canonical_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        let normalized_root = canonical_root
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in normalized_root.bytes() {
+            fingerprint ^= u64::from(byte);
+            fingerprint = fingerprint.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let stem = format!("Local\\WozWorldDock-{fingerprint:016x}");
+        Self::acquire_named(&stem, &format!("{stem}-activate"))
+    }
+
+    fn acquire_named(mutex_name: &str, event_name: &str) -> io::Result<Option<Self>> {
+        let mutex_name = wide_null(mutex_name);
+        let event_name = wide_null(event_name);
+        // Create the event first so a concurrent second launch can always signal the winner.
+        let activation_event = unsafe { CreateEventW(ptr::null_mut(), 0, 0, event_name.as_ptr()) };
+        if activation_event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mutex = unsafe { CreateMutexW(ptr::null_mut(), 0, mutex_name.as_ptr()) };
+        if mutex.is_null() {
+            unsafe { CloseHandle(activation_event) };
+            return Err(io::Error::last_os_error());
+        }
+
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            let signalled = unsafe { SetEvent(activation_event) } != 0;
+            unsafe {
+                CloseHandle(mutex);
+                CloseHandle(activation_event);
+            }
+            return if signalled {
+                Ok(None)
+            } else {
+                Err(io::Error::last_os_error())
+            };
+        }
+
+        Ok(Some(Self {
+            mutex,
+            activation_event,
+        }))
+    }
+
+    fn take_activation_request(&self) -> bool {
+        unsafe { WaitForSingleObject(self.activation_event, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.activation_event);
+            CloseHandle(self.mutex);
+        }
+    }
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+fn should_start_shutdown(status: &WorldStatus) -> bool {
+    !matches!(status, WorldStatus::Stopped)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -232,6 +337,10 @@ struct WorldDock {
     show_recovery_confirmation: bool,
     exit_requested: bool,
     exit_after_stop: bool,
+    exit_status_check_active: bool,
+    exit_needs_fresh_status: bool,
+    last_status_verified: Instant,
+    instance: SingleInstance,
     tray_icon: Option<TrayIcon>,
     tray_items: Option<TrayItems>,
 }
@@ -279,7 +388,7 @@ struct ServiceSnapshotRecord {
 }
 
 impl WorldDock {
-    fn new(project_root: PathBuf, settings: Settings) -> Self {
+    fn new(project_root: PathBuf, settings: Settings, instance: SingleInstance) -> Self {
         let (operation_sender, operation_receiver) = mpsc::channel();
         let (status_sender, status_receiver) = mpsc::channel();
         let (account_sender, account_receiver) = mpsc::channel();
@@ -323,6 +432,12 @@ impl WorldDock {
             show_recovery_confirmation: false,
             exit_requested: false,
             exit_after_stop: false,
+            exit_status_check_active: false,
+            exit_needs_fresh_status: false,
+            last_status_verified: Instant::now()
+                .checked_sub(STATUS_REFRESH)
+                .unwrap_or_else(Instant::now),
+            instance,
             tray_icon: None,
             tray_items: None,
         };
@@ -451,6 +566,8 @@ impl WorldDock {
             };
             if self.exit_after_stop && result.operation == Operation::Stop {
                 self.exit_after_stop = false;
+                self.exit_status_check_active = false;
+                self.exit_needs_fresh_status = false;
                 if result.error.is_none() && result.exit_code == Some(0) {
                     self.exit_requested = true;
                 } else {
@@ -460,6 +577,8 @@ impl WorldDock {
                         self.last_operation
                     );
                 }
+            } else if self.exit_after_stop {
+                self.start_exit_status_check();
             }
             self.last_status_check = Instant::now()
                 .checked_sub(STATUS_REFRESH)
@@ -622,7 +741,61 @@ impl WorldDock {
             self.status_check_in_progress = false;
             self.status = result.status;
             self.service_lines = result.service_lines;
+            self.last_status_verified = Instant::now();
             self.update_tray_status();
+        }
+
+        if self.exit_after_stop && self.active_operation.is_none() {
+            if self.exit_needs_fresh_status {
+                self.exit_needs_fresh_status = false;
+                self.start_exit_status_check();
+            } else if self.exit_status_check_active {
+                self.exit_status_check_active = false;
+                if should_start_shutdown(&self.status) {
+                    self.last_operation =
+                        "Services are active; requesting graceful shutdown before exit…".to_owned();
+                    self.begin_operation(Operation::Stop);
+                } else {
+                    self.exit_after_stop = false;
+                    self.exit_requested = true;
+                    self.last_operation = "Services are verified stopped. Exiting.".to_owned();
+                }
+            }
+        }
+    }
+
+    fn request_exit(&mut self, ctx: &egui::Context) {
+        if self.exit_requested || self.exit_after_stop {
+            return;
+        }
+        if self.active_operation.is_none()
+            && !should_start_shutdown(&self.status)
+            && self.last_status_verified.elapsed() < STATUS_REFRESH
+        {
+            self.exit_requested = true;
+            self.last_operation = "Services are verified stopped. Exiting.".to_owned();
+            return;
+        }
+
+        self.exit_after_stop = true;
+        if self.active_operation.is_some() {
+            self.last_operation =
+                "Exit requested; waiting for the current command before checking services."
+                    .to_owned();
+        } else {
+            self.last_operation = "Checking services before graceful shutdown…".to_owned();
+            self.start_exit_status_check();
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+    }
+
+    fn start_exit_status_check(&mut self) {
+        if self.status_check_in_progress {
+            self.exit_needs_fresh_status = true;
+        } else {
+            self.exit_status_check_active = true;
+            self.refresh_status();
         }
     }
 
@@ -707,14 +880,7 @@ impl WorldDock {
                     self.begin_operation(Operation::Restart);
                 }
             } else if event.id == *items.exit.id() {
-                if !self.exit_requested && !self.exit_after_stop {
-                    self.exit_after_stop = true;
-                    if self.active_operation.is_some() {
-                        self.last_operation =
-                            "Exit queued; waiting for the current service command to finish."
-                                .to_owned();
-                    }
-                }
+                self.request_exit(ctx);
             }
         }
     }
@@ -781,8 +947,9 @@ impl eframe::App for WorldDock {
         self.receive_operation_results();
         self.receive_status_results();
         self.process_tray_events(&ctx);
-        if self.exit_after_stop && self.active_operation.is_none() {
-            self.begin_operation(Operation::Stop);
+        if self.instance.take_activation_request() {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
         if self.exit_requested && self.active_operation.is_none() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -1281,6 +1448,13 @@ fn main() -> eframe::Result<()> {
         eprintln!("{message}");
         eframe::Error::AppCreation(Box::new(io::Error::new(io::ErrorKind::NotFound, message)))
     })?;
+    let instance = SingleInstance::for_installation(&project_root).map_err(|error| {
+        eprintln!("Could not establish World Dock's per-installation instance guard: {error}");
+        eframe::Error::AppCreation(Box::new(error))
+    })?;
+    let Some(instance) = instance else {
+        return Ok(());
+    };
     let settings = load_settings(&project_root);
     let mut viewport = ViewportBuilder::default()
         .with_app_id("woz-world-dock")
@@ -1300,6 +1474,45 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Woz's World Dock",
         native_options,
-        Box::new(move |_creation_context| Ok(Box::new(WorldDock::new(project_root, settings)))),
+        Box::new(move |_creation_context| {
+            Ok(Box::new(WorldDock::new(project_root, settings, instance)))
+        }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_instance_signals_existing_instance_and_exits() {
+        let unique = format!(
+            "Local\\WozWorldDock-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let existing = SingleInstance::acquire_named(&unique, &format!("{unique}-activate"))
+            .expect("first instance should acquire the mutex")
+            .expect("first instance should remain active");
+        let duplicate = SingleInstance::acquire_named(&unique, &format!("{unique}-activate"))
+            .expect("duplicate should signal the existing instance");
+
+        assert!(duplicate.is_none());
+        assert!(existing.take_activation_request());
+    }
+
+    #[test]
+    fn exit_skips_shutdown_only_when_status_is_verified_stopped() {
+        assert!(!should_start_shutdown(&WorldStatus::Stopped));
+        assert!(should_start_shutdown(&WorldStatus::Running {
+            process_id: 123
+        }));
+        assert!(should_start_shutdown(&WorldStatus::ServiceIssue {
+            process_id: Some(123),
+            can_start_missing_service: false,
+        }));
+    }
 }
